@@ -1,0 +1,103 @@
+# =========================================
+# 🐍 GITIGNORE UNTUK PROJECT PYTHON (Simpati)
+# =========================================
+
+# 🔒 File rahasia & konfigurasi lokal
+.env
+*.key
+*.pem
+*.spt
+*.enc
+*.env
+.env.*
+*.bat
+.bat.*
+*.json
+simpati.key
+config.json
+secrets.json
+
+# Salah ketik perintah Git
+t commit Simpati*
+
+# 🧱 Database lokal
+*.db
+*.sqlite
+*.sqlite3
+temp_*.db
+*.db.enc
+
+# 📂 Folder cache dan build
+__pycache__/
+*.py[cod]
+*$py.class
+*.vscode
+*.build
+*.buildenv
+buildenv/
+.buildenv/
+*.dist
+*.Portable
+
+# 🧩 Virtual environment
+venv/
+.env/
+env/
+.venv/
+
+# 🧰 IDE / Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 📊 Log dan file sementara
+*.log
+*.tmp
+*.bak
+*.swp
+*.~*
+.DS_Store
+Thumbs.db
+
+# 📦 Output build / dist
+build/
+dist/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# 🧾 PyInstaller & cx_Freeze artifacts
+output/
+dist/
+build/
+*.exe
+*.dll
+*.pyd
+
+# PyInstaller spec file
+*.spec
+
+# 🧰 Testing & profiling
+.coverage
+.cache/
+pytest_cache/
+htmlcov/
+
+# Local Git config
+.gitconfig
+#Simpati
+#Simpati.*
+
+# 🔍 Backup / temp / auto-save
+*.bak
+*.old
+*.orig
+*.tmp
+*.swp
+*~
+~$*
+
+# 🪟 Windows-specific
+desktop.ini

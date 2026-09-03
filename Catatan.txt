@@ -1,0 +1,29 @@
+==============================================
+		PETUNJUK INSTALASI:
+==============================================
+
+Install Pythin versi Python 3.12.5 (Disarankan untuk melakukan instalasi Python dengan versi yang sama)
+Setelah Python terinstall, install juga dependencies berikut:
+
+1. py -m pip install pyqt6 pyqt6-qt6 pyqt6-sip pyqt6-charts pyqt6-pdf pyqt6-webengine
+2. py -m pip install sqlcipher3-wheels
+3. py -m pip install reportlab pypdf2
+4. py -m pip install openpyxl
+5. py -m pip install pycryptodome
+6. py -m pip install pyotp qrcode
+7. py -m pip install pillow
+8. py -m pip install matplotlib
+9. py -m pip install pandas
+10. py -m pip install pyinstaller 
+
+
+==============================================
+		HAL YANG HARUS DIPERHATIKAN:
+==============================================
+Sesuaikan tanggal Pemilu di tempat berikut yang diberi komentar:
+
+##### Ubah jadi tanggal Pemilu #####  <---------- Copy dan cari di VexVo.py
+
+Hanya ubah di 2 tempat:
+1. def cek_potensi_dibawah_umur
+2. def simpan_data_ke_tabel_aktif

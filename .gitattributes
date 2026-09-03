@@ -1,0 +1,42 @@
+# ========================================
+# DEFAULT: biarkan Git handle text normal
+# ========================================
+* text=auto
+
+# ========================================
+# PYTHON (pakai LF - standar cross-platform)
+# ========================================
+*.py text eol=lf
+*.spec text eol=lf
+
+# ========================================
+# CONFIG & DOCUMENT
+# ========================================
+*.txt text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+
+# ========================================
+# WINDOWS SCRIPT (HARUS CRLF)
+# ========================================
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ========================================
+# INNO SETUP SCRIPT
+# ========================================
+*.iss text eol=crlf
+
+# ========================================
+# BINARY FILE (JANGAN DIUBAH)
+# ========================================
+*.exe binary
+*.dll binary
+*.pyd binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.bmp binary
+*.zip binary
+*.7z binary
+*.pfx binary
