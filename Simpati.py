@@ -83,7 +83,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QDockWidget, QMenu, QMessageBox, QCompleter,
     QStackedWidget, QStatusBar, QToolBar, QToolButton, QHeaderView, QTableWidget,
     QTableWidgetItem, QStyledItemDelegate, QAbstractItemView, QStyle, QStyleOptionViewItem,
-    QFileDialog, QScrollArea, QFormLayout, QGridLayout, QProgressBar,
+    QFileDialog, QScrollArea, QFormLayout, QGridLayout, QProgressBar, QProgressDialog,
     QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, QPushButton, QComboBox, QGraphicsBlurEffect,
     QCheckBox, QRadioButton, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QDialogButtonBox,
     QGraphicsSimpleTextItem, QSizePolicy, QStyleOptionButton, QDateEdit, QTextEdit, QStyleFactory
@@ -5531,15 +5531,99 @@ def generate_backup_code(length: int = 24, group: int = 4) -> str:
     return "-".join(raw[i:i + group] for i in range(0, len(raw), group))
 
 
+_active_backup_workers = []  # menahan referensi worker agar tidak di-garbage-collect
+
+
+class BackupWorker(QThread):
+    finished_ok = pyqtSignal(str, str)   # backup_path (str), ts
+    finished_error = pyqtSignal(str)
+
+    def __init__(self, otp_secret, backup_code, parent=None):
+        super().__init__(parent)
+        self.otp_secret = otp_secret
+        self.backup_code = backup_code
+
+    def run(self):
+        try:
+            from db_manager import load_or_create_key as db_load_key
+
+            backup_pwd = self.backup_code.strip()
+
+            settings_dir = Path(APPDATA) / "SIMPATI" / "ColumnSettings"
+            json_files = {
+                "ColumnSettings/column_widths_datapantarlih.json": settings_dir / "column_widths_datapantarlih.json",
+                "ColumnSettings/column_widths_unggahreguler.json": settings_dir / "column_widths_unggahreguler.json",
+                "ColumnSettings/column_widths.json": settings_dir / "column_widths.json",
+            }
+
+            buf = BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                if DB_PATH.exists():
+                    zf.write(DB_PATH, "simpati.db")
+                else:
+                    print("[BACKUP WARNING] Database tidak ditemukan:", DB_PATH)
+
+                if KEY_PATH.exists():
+                    try:
+                        zf.write(KEY_PATH, "simpati.key")
+                    except Exception as e:
+                        print("[BACKUP WARNING] Gagal menambahkan simpati.key:", e)
+                else:
+                    print("[BACKUP WARNING] File key tidak ditemukan:", KEY_PATH)
+
+                try:
+                    raw_key = db_load_key()
+                    if isinstance(raw_key, str):
+                        raw_key = raw_key.encode("utf-8")
+                    zf.writestr("dbkey.bin", raw_key)
+                except Exception as e:
+                    print("[BACKUP WARNING] Gagal menambahkan dbkey.bin:", e)
+
+                for name, path in json_files.items():
+                    try:
+                        if path.exists():
+                            zf.write(path, name)
+                        else:
+                            print(f"[BACKUP WARNING] File JSON tidak ditemukan: {path}")
+                    except Exception as e:
+                        print(f"[BACKUP WARNING] Gagal menambahkan {path}: {e}")
+
+                zf.writestr("otp.secret", self.otp_secret)
+                zf.writestr("meta.txt", f"Backup dibuat: {datetime.now()}")
+
+            data = buf.getvalue()
+
+            salt = os.urandom(16)
+            key = PBKDF2(backup_pwd, salt, dkLen=32, count=200_000)
+            iv = os.urandom(12)
+            cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+            ciphertext, tag = cipher.encrypt_and_digest(data)
+
+            now = datetime.now()
+            ts = now.strftime("%d%m%Y %H%M")
+            backup_name = f"SIMPATI_BackUp {ts}{BACKUP_EXT}"
+            backup_path = BACKUP_DIR / backup_name
+
+            with open(backup_path, "wb") as f:
+                f.write(BACKUP_MAGIC)
+                f.write(salt)
+                f.write(iv)
+                f.write(tag)
+                f.write(ciphertext)
+
+            self.finished_ok.emit(str(backup_path), ts)
+
+        except Exception as e:
+            self.finished_error.emit(str(e))
+
 def backup_simpati(parent=None):
     """Backup lengkap SIMPATI (.spt) termasuk database, key, OTP secret, dan file JSON pengaturan kolom)."""
     ensure_dirs()
-    from db_manager import get_connection, load_or_create_key as db_load_key
+    from db_manager import get_connection
 
     conn = get_connection()
     cur = conn.cursor()
 
-    # ✅ Pastikan database dalam keadaan bersih
     try:
         conn.commit()
         cur.execute("PRAGMA wal_checkpoint(FULL)")
@@ -5548,7 +5632,6 @@ def backup_simpati(parent=None):
     except Exception as e:
         print("[BACKUP WARNING] Gagal melakukan checkpoint/commit:", e)
 
-    # === Ambil OTP secret ===
     cur.execute("SELECT otp_secret FROM users LIMIT 1")
     row = cur.fetchone()
     if not row or not row[0]:
@@ -5556,7 +5639,6 @@ def backup_simpati(parent=None):
         return
     otp_secret = row[0]
 
-    # === Verifikasi OTP (wajib sebelum backup) ===
     import pyotp
     code, ok = ModernInputDialog(
         "Verifikasi OTP",
@@ -5571,90 +5653,41 @@ def backup_simpati(parent=None):
         show_modern_error(parent, "OTP Salah", "Kode OTP tidak valid atau kedaluwarsa.")
         return
 
-    # === Generate KODE BACKUP acak (pengganti password manual) ===
     backup_code = generate_backup_code()
-    backup_pwd = backup_code.strip()  # ini yang dipakai untuk PBKDF2
 
-    # === Path file JSON yang ikut dibackup ===
-    settings_dir = Path(APPDATA) / "SIMPATI" / "ColumnSettings"
-    json_files = {
-        "ColumnSettings/column_widths_datapantarlih.json": settings_dir / "column_widths_datapantarlih.json",
-        "ColumnSettings/column_widths_unggahreguler.json": settings_dir / "column_widths_unggahreguler.json",
-        "ColumnSettings/column_widths.json": settings_dir / "column_widths.json",
-    }
+    progress_dlg = QProgressDialog("Membuat file backup terenkripsi...", None, 0, 0, parent)
+    progress_dlg.setWindowTitle("Backup SIMPATI")
+    progress_dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+    progress_dlg.setCancelButton(None)
+    progress_dlg.show()
 
-    # === Kompres seluruh file penting ke buffer ZIP ===
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 🔹 Database
-        if DB_PATH.exists():
-            zf.write(DB_PATH, "simpati.db")
-        else:
-            print("[BACKUP WARNING] Database tidak ditemukan:", DB_PATH)
+    worker = BackupWorker(otp_secret, backup_code, parent=parent)
+    _active_backup_workers.append(worker)
 
-        # 🔹 Key file saat ini — ikut untuk kompatibilitas
-        if KEY_PATH.exists():
-            try:
-                zf.write(KEY_PATH, "simpati.key")
-            except Exception as e:
-                print("[BACKUP WARNING] Gagal menambahkan simpati.key:", e)
-        else:
-            print("[BACKUP WARNING] File key tidak ditemukan:", KEY_PATH)
+    def _cleanup():
+        if worker in _active_backup_workers:
+            _active_backup_workers.remove(worker)
 
-        # 🔹 Raw key 32 byte
-        try:
-            raw_key = db_load_key()
-            if isinstance(raw_key, str):
-                raw_key = raw_key.encode("utf-8")
-            zf.writestr("dbkey.bin", raw_key)
-            print("[BACKUP] Termasuk dbkey.bin (kunci SQLCipher mentah 32 byte).")
-        except Exception as e:
-            print("[BACKUP WARNING] Gagal menambahkan dbkey.bin:", e)
+    def on_ok(backup_path_str, ts):
+        progress_dlg.close()
+        _cleanup()
+        _lanjutkan_backup_setelah_file_siap(parent, Path(backup_path_str), backup_code, ts)
 
-        # 🔹 File JSON pengaturan kolom
-        for name, path in json_files.items():
-            try:
-                if path.exists():
-                    zf.write(path, name)
-                    print(f"[BACKUP] Termasuk file JSON: {name}")
-                else:
-                    print(f"[BACKUP WARNING] File JSON tidak ditemukan: {path}")
-            except Exception as e:
-                print(f"[BACKUP WARNING] Gagal menambahkan {path}: {e}")
+    def on_err(msg):
+        progress_dlg.close()
+        _cleanup()
+        show_modern_error(parent, "Error", f"Gagal membuat backup:\n{msg}")
 
-        # 🔹 Metadata OTP & informasi backup
-        zf.writestr("otp.secret", otp_secret)
-        zf.writestr("meta.txt", f"Backup dibuat: {datetime.now()}")
+    worker.finished_ok.connect(on_ok)
+    worker.finished_error.connect(on_err)
+    worker.start()
 
-    data = buf.getvalue()
 
-    # === Enkripsi AES-GCM dengan kode backup (via PBKDF2) ===
-    salt = os.urandom(16)
-    key = PBKDF2(backup_pwd, salt, dkLen=32, count=200_000)
-    iv = os.urandom(12)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-    ciphertext, tag = cipher.encrypt_and_digest(data)
-
-    # 🔸 PAKAI SATU TIMESTAMP UNTUK BACKUP & FILE KODE
-    now = datetime.now()
-    ts = now.strftime("%d%m%Y %H%M")
-
-    backup_name = f"SIMPATI_BackUp {ts}{BACKUP_EXT}"
-    backup_path = BACKUP_DIR / backup_name
-
-    with open(backup_path, "wb") as f:
-        f.write(BACKUP_MAGIC)
-        f.write(salt)
-        f.write(iv)
-        f.write(tag)
-        f.write(ciphertext)
-
-    # === Salin kode ke clipboard ===
+def _lanjutkan_backup_setelah_file_siap(parent, backup_path, backup_code, ts):
+    """Bagian ringan (dialog & clipboard) yang tetap di UI thread setelah file backup selesai dibuat."""
     clipboard = QApplication.clipboard()
     clipboard.setText(backup_code)
 
-    # === SIMPAN KODE KE FILE .TXT (WAJIB) ===
-    # User hanya boleh memilih folder. Jika batal → backup juga dibatalkan.
     folder = QFileDialog.getExistingDirectory(
         parent,
         "Pilih Folder untuk menyimpan Kode Backup",
@@ -5677,7 +5710,6 @@ def backup_simpati(parent=None):
             print("[BACKUP WARNING] Gagal menyimpan kode backup ke file:", e)
             saved_txt_ok = False
 
-    # Kalau file TXT tidak berhasil disimpan → HAPUS file backup & batalkan
     if not saved_txt_ok:
         try:
             if backup_path.exists():
@@ -5686,16 +5718,9 @@ def backup_simpati(parent=None):
         except Exception as e:
             print("[BACKUP WARNING] Gagal menghapus file backup saat pembatalan:", e)
 
-        show_modern_warning(
-            parent,
-            "Backup Dibatalkan",
-            (
-                "Backup dibatalkan"
-            ),
-        )
+        show_modern_warning(parent, "Backup Dibatalkan", "Backup dibatalkan")
         return
 
-    # Info final ke user (hanya jika TXT berhasil disimpan)
     msg = (
         f"File backup tersimpan di:\n{backup_path}\n\n"
         f"KODE BACKUP:\n{backup_code}\n\n"
@@ -5706,19 +5731,120 @@ def backup_simpati(parent=None):
     )
     show_modern_info(parent, "Backup Selesai", msg)
 
-def restore_simpati(parent=None):
-    """Pulihkan seluruh data SIMPATI dari file .spt.
+_active_restore_workers = []  # menahan referensi worker agar tidak di-garbage-collect
 
-    Mendukung dua format:
-    • Format BARU (direkomendasikan):
-        Header = BACKUP_MAGIC + salt(16) + iv(12) + tag(16) + ciphertext
-        Ciphertext = ZIP yang berisi simpati.db, dbkey.bin, otp.secret, file JSON, dst.
-        Kunci AES-GCM = PBKDF2(password_backup, salt, 200k iter, 32 byte).
-    • Format LAMA (kompatibilitas):
-        Header = len(otp_secret)(2 byte) + otp_secret + salt + iv + tag + ciphertext
-        Ciphertext = ZIP lama berisi simpati.db, simpati.key, otp.secret, file JSON.
-        Kunci AES-GCM = PBKDF2(otp_secret, salt, 200k iter, 32 byte).
-    """
+
+class RestoreWorker(QThread):
+    finished_ok = pyqtSignal(str)      # restored_otp (bisa string kosong)
+    finished_error = pyqtSignal(str)
+
+    def __init__(self, blob, is_new_format, backup_pwd, parent=None):
+        super().__init__(parent)
+        self.blob = blob
+        self.is_new_format = is_new_format
+        self.backup_pwd = backup_pwd   # None kalau format lama (password diambil dari dalam blob)
+
+    def run(self):
+        try:
+            if self.is_new_format:
+                offset = len(BACKUP_MAGIC)
+                salt = self.blob[offset:offset + 16]
+                iv = self.blob[offset + 16:offset + 28]
+                tag = self.blob[offset + 28:offset + 44]
+                ciphertext = self.blob[offset + 44:]
+                key = PBKDF2(self.backup_pwd, salt, dkLen=32, count=200_000)
+            else:
+                secret_len = int.from_bytes(self.blob[:2], "big")
+                otp_secret_embedded = self.blob[2:2 + secret_len].decode()
+                salt = self.blob[2 + secret_len:18 + secret_len]
+                iv = self.blob[18 + secret_len:30 + secret_len]
+                tag = self.blob[30 + secret_len:46 + secret_len]
+                ciphertext = self.blob[46 + secret_len:]
+                key = PBKDF2(otp_secret_embedded, salt, dkLen=32, count=200_000)
+
+            cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
+            data = cipher.decrypt_and_verify(ciphertext, tag)
+
+            temp_dir = Path(APPDATA) / "SIMPATITempRestore"
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            with zipfile.ZipFile(BytesIO(data), "r") as zf:
+                zf.extractall(temp_dir)
+
+            restored_db = temp_dir / "simpati.db"
+            restored_key_file = temp_dir / "simpati.key"
+            restored_dbkey_bin = temp_dir / "dbkey.bin"
+            otp_file = temp_dir / "otp.secret"
+            restored_otp = otp_file.read_text().strip() if otp_file.exists() else None
+
+            for target in [DB_PATH, KEY_PATH]:
+                try:
+                    if target.exists():
+                        os.chmod(target, 0o666)
+                        target.unlink()
+                except Exception as e:
+                    print(f"[RESTORE WARNING] Tidak dapat hapus {target}: {e}")
+
+            if restored_db.exists():
+                shutil.move(str(restored_db), str(DB_PATH))
+            else:
+                raise FileNotFoundError("File simpati.db tidak ditemukan di backup.")
+
+            if self.is_new_format:
+                if restored_dbkey_bin.exists():
+                    key_bytes = restored_dbkey_bin.read_bytes()
+                    KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    KEY_PATH.write_bytes(key_bytes)
+                else:
+                    raise FileNotFoundError("dbkey.bin tidak ditemukan di backup format baru.")
+            else:
+                if restored_key_file.exists():
+                    KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(restored_key_file), str(KEY_PATH))
+                else:
+                    raise FileNotFoundError("simpati.key tidak ditemukan di backup format lama.")
+
+            settings_dest = Path(APPDATA) / "SIMPATI" / "ColumnSettings"
+            json_restore_map = {
+                temp_dir / "ColumnSettings" / "column_widths_datapantarlih.json": settings_dest / "column_widths_datapantarlih.json",
+                temp_dir / "ColumnSettings" / "column_widths_unggahreguler.json": settings_dest / "column_widths_unggahreguler.json",
+                temp_dir / "ColumnSettings" / "column_widths.json": settings_dest / "column_widths.json",
+            }
+            for src, dest in json_restore_map.items():
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if src.exists():
+                        shutil.move(str(src), str(dest))
+                except Exception as e:
+                    print(f"[RESTORE WARNING] Gagal restore {src.name}: {e}")
+
+            if restored_otp:
+                conn = None
+                try:
+                    from db_manager import get_temp_connection
+                    conn = get_temp_connection()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE users SET otp_secret = ?", (restored_otp,))
+                    conn.commit()
+                except Exception as e:
+                    print("[RESTORE WARNING] Gagal meng-update otp_secret di database:", e)
+                finally:
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.finished_ok.emit(restored_otp or "")
+
+        except Exception as e:
+            self.finished_error.emit(str(e))
+
+def restore_simpati(parent=None):
+    """Pulihkan seluruh data SIMPATI dari file .spt. (dokumentasi format sama seperti sebelumnya)"""
     ensure_dirs()
 
     spt_path = QFileDialog.getOpenFileName(
@@ -5730,165 +5856,71 @@ def restore_simpati(parent=None):
     if not spt_path:
         return
 
-    is_new_format = False
-
-    # === Dekripsi file backup ===
     try:
         with open(spt_path, "rb") as f:
             blob = f.read()
-
-        # Deteksi format baru vs lama
-        if blob.startswith(BACKUP_MAGIC):
-            is_new_format = True
-
-            # Format baru: magic + salt + iv + tag + ciphertext
-            offset = len(BACKUP_MAGIC)
-            salt = blob[offset:offset + 16]
-            iv = blob[offset + 16:offset + 28]
-            tag = blob[offset + 28:offset + 44]
-            ciphertext = blob[offset + 44:]
-
-            # Minta password backup
-            backup_pwd, ok_pwd = ModernInputDialog(
-                "Kode Backup",
-                (
-                    "File backup ini dilindungi dengan kode backup.\n"
-                    "Masukkan Kode Backup yang diberikan saat membuat backup:"
-                ),
-                parent,
-                is_password=True,  # tetap disembunyikan di layar
-            ).getText()
-            
-            if not ok_pwd or not backup_pwd.strip():
-                show_modern_warning(parent, "Dibatalkan", "Restore dibatalkan — password backup tidak diisi.")
-                return
-            backup_pwd = backup_pwd.strip()
-
-            key = PBKDF2(backup_pwd, salt, dkLen=32, count=200_000)
-            cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-            data = cipher.decrypt_and_verify(ciphertext, tag)
-        else:
-            # Format lama: tetap dukung agar backup lama masih bisa dipakai
-            secret_len = int.from_bytes(blob[:2], "big")
-            otp_secret = blob[2:2 + secret_len].decode()
-            salt = blob[2 + secret_len:18 + secret_len]
-            iv = blob[18 + secret_len:30 + secret_len]
-            tag = blob[30 + secret_len:46 + secret_len]
-            ciphertext = blob[46 + secret_len:]
-
-            key = PBKDF2(otp_secret, salt, dkLen=32, count=200_000)
-            cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-            data = cipher.decrypt_and_verify(ciphertext, tag)
-
     except Exception as e:
-        show_modern_error(
-            parent,
-            "Gagal Dekripsi",
-            "Backup rusak atau password/format tidak cocok.\n\n"
-            f"{e}",
-        )
-        print("[RESTORE ERROR]", e)
+        show_modern_error(parent, "Gagal", f"Tidak dapat membaca file backup:\n{e}")
         return
 
-    # === Ekstrak hasil ZIP ke folder sementara ===
+    is_new_format = blob.startswith(BACKUP_MAGIC)
+    backup_pwd = None
+
+    if is_new_format:
+        backup_pwd_input, ok_pwd = ModernInputDialog(
+            "Kode Backup",
+            (
+                "File backup ini dilindungi dengan kode backup.\n"
+                "Masukkan Kode Backup yang diberikan saat membuat backup:"
+            ),
+            parent,
+            is_password=True,
+        ).getText()
+
+        if not ok_pwd or not backup_pwd_input.strip():
+            show_modern_warning(parent, "Dibatalkan", "Restore dibatalkan — password backup tidak diisi.")
+            return
+        backup_pwd = backup_pwd_input.strip()
+
+    # === Tutup koneksi database sebelum file diganti ===
     try:
-        temp_dir = Path(APPDATA) / "SIMPATITempRestore"
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        from db_manager import close_connection
+        close_connection()
+    except Exception as e:
+        print("[RESTORE WARNING] Tidak bisa menutup koneksi:", e)
 
-        with zipfile.ZipFile(BytesIO(data), "r") as zf:
-            zf.extractall(temp_dir)
+    progress_dlg = QProgressDialog("Memulihkan data SIMPATI...", None, 0, 0, parent)
+    progress_dlg.setWindowTitle("Restore SIMPATI")
+    progress_dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+    progress_dlg.setCancelButton(None)
+    progress_dlg.show()
 
-        restored_db = temp_dir / "simpati.db"
-        restored_key_file = temp_dir / "simpati.key"   # format lama
-        restored_dbkey_bin = temp_dir / "dbkey.bin"  # format baru
-        otp_file = temp_dir / "otp.secret"
-        restored_otp = otp_file.read_text().strip() if otp_file.exists() else None
+    worker = RestoreWorker(blob, is_new_format, backup_pwd, parent=parent)
+    _active_restore_workers.append(worker)
 
-        # === Tutup koneksi database aktif (kalau ada) ===
-        try:
-            from db_manager import close_connection
-            close_connection()
-        except Exception as e:
-            print("[RESTORE WARNING] Tidak bisa menutup koneksi:", e)
+    def _cleanup():
+        if worker in _active_restore_workers:
+            _active_restore_workers.remove(worker)
 
-        # === Hapus file lama (aman) ===
-        for target in [DB_PATH, KEY_PATH]:
-            try:
-                if target.exists():
-                    os.chmod(target, 0o666)
-                    target.unlink()
-            except Exception as e:
-                print(f"[RESTORE WARNING] Tidak dapat hapus {target}: {e}")
-
-        # === Pindahkan database baru ===
-        if restored_db.exists():
-            shutil.move(str(restored_db), str(DB_PATH))
-        else:
-            raise FileNotFoundError("File simpati.db tidak ditemukan di backup.")
-
-        # === Bangun ulang file KEY_PATH berdasarkan format backup ===
-        if is_new_format:
-            # Format baru: ambil raw key dari dbkey.bin dan tulis langsung sebagai 32 byte.
-            if restored_dbkey_bin.exists():
-                key_bytes = restored_dbkey_bin.read_bytes()
-                KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-                KEY_PATH.write_bytes(key_bytes)
-                print("[RESTORE] KEY_PATH dibuat ulang dari dbkey.bin.")
-            else:
-                raise FileNotFoundError("dbkey.bin tidak ditemukan di backup format baru.")
-        else:
-            # Format lama: pakai file simpati.key apa adanya (32 byte mentah).
-            if restored_key_file.exists():
-                KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(restored_key_file), str(KEY_PATH))
-                print("[RESTORE] KEY_PATH dipulihkan dari simpati.key (format lama).")
-            else:
-                raise FileNotFoundError("simpati.key tidak ditemukan di backup format lama.")
-
-        # === Restore file JSON (tidak hentikan proses jika error) ===
-        settings_dest = Path(APPDATA) / "SIMPATI" / "ColumnSettings"
-        json_restore_map = {
-            temp_dir / "ColumnSettings" / "column_widths_datapantarlih.json": settings_dest / "column_widths_datapantarlih.json",
-            temp_dir / "ColumnSettings" / "column_widths_unggahreguler.json": settings_dest / "column_widths_unggahreguler.json",
-            temp_dir / "ColumnSettings" / "column_widths.json": settings_dest / "column_widths.json",
-        }
-
-        for src, dest in json_restore_map.items():
-            try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if src.exists():
-                    shutil.move(str(src), str(dest))
-                    # print(f"[RESTORE] File JSON dipulihkan: {dest.name}")
-                else:
-                    print(f"[RESTORE WARNING] File JSON tidak ditemukan di backup: {src.name}")
-            except Exception as e:
-                print(f"[RESTORE WARNING] Gagal restore {src.name}: {e}")
-
-        # === Update OTP secret di tabel users (jika tersedia) ===
-        if restored_otp:
-            try:
-                from db_manager import get_connection
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute("UPDATE users SET otp_secret = ?", (restored_otp,))
-                conn.commit()
-            except Exception as e:
-                print("[RESTORE WARNING] Gagal meng-update otp_secret di database:", e)
-
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    def on_ok(restored_otp):
+        progress_dlg.close()
+        _cleanup()
         show_modern_info(parent, "Restore Berhasil", "Semua data SIMPATI berhasil dipulihkan.")
         print("[RESTORE] Restore Berhasil, semua data SIMPATI berhasil dipulihkan.")
-
-        # Kembali ke layar login
         win = LoginWindow()
         win.show()
-        parent.close()
+        if parent is not None:
+            parent.close()
 
-    except Exception as e:
-        show_modern_error(parent, "Gagal Restore", f"Kesalahan saat ekstraksi/restore data:\n\n{e}")
-        print("[RESTORE EXTRACT ERROR]", e)
+    def on_err(msg):
+        progress_dlg.close()
+        _cleanup()
+        show_modern_error(parent, "Gagal Restore", f"Kesalahan saat dekripsi/ekstraksi/restore data:\n\n{msg}")
+        print("[RESTORE ERROR]", msg)
+
+    worker.finished_ok.connect(on_ok)
+    worker.finished_error.connect(on_err)
+    worker.start()
 
 class CustomWatermarkedTable(QTableWidget):
     """Watermark diagonal berulang: muncul di atas background tapi di bawah teks."""
@@ -6147,6 +6179,537 @@ class CsvImportWorker(QThread):
             self.finished_error.emit(str(e))
         finally:
             # ✅ WAJIB ditutup — ini koneksi baru, bukan koneksi global aplikasi
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+class BaruEcoklitWorker(QThread):
+    finished_ok = pyqtSignal(int, str)     # jumlah baris ditambahkan, now_str
+    finished_empty = pyqtSignal()
+    finished_error = pyqtSignal(str)
+
+    def __init__(self, reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+                 idx_nama, idx_jk, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+                 idx_dis, idx_sumber, idx_alamat, idx_tps, idx_ektp,
+                 nama_kec, nama_desa, parent=None):
+        super().__init__(parent)
+        self.reader = reader
+        self.idx_kec = idx_kec
+        self.idx_kel = idx_kel
+        self.idx_dpid = idx_dpid
+        self.idx_ket = idx_ket
+        self.idx_nik = idx_nik
+        self.idx_nkk = idx_nkk
+        self.idx_nama = idx_nama
+        self.idx_jk = idx_jk
+        self.idx_tempat = idx_tempat
+        self.idx_tanggal = idx_tanggal
+        self.idx_status = idx_status
+        self.idx_rt = idx_rt
+        self.idx_rw = idx_rw
+        self.idx_dis = idx_dis
+        self.idx_sumber = idx_sumber
+        self.idx_alamat = idx_alamat
+        self.idx_tps = idx_tps
+        self.idx_ektp = idx_ektp
+        self.nama_kec = nama_kec
+        self.nama_desa = nama_desa
+
+    def run(self):
+        conn = None
+        try:
+            from db_manager import get_temp_connection
+            conn = get_temp_connection()
+            cur = conn.cursor()
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
+            if not cur.fetchone():
+                self.finished_error.emit("Data Sidalih masih kosong, silakan import CSV Sidalih terlebih dahulu.")
+                return
+            cur.execute("SELECT 1 FROM dphp LIMIT 1")
+            if not cur.fetchone():
+                self.finished_error.emit("Data Sidalih masih kosong, silakan import CSV Sidalih terlebih dahulu.")
+                return
+
+            cur.execute("PRAGMA table_info(dphp)")
+            dphp_cols = [r[1] for r in cur.fetchall()]
+            if not dphp_cols:
+                self.finished_error.emit("Struktur tabel DPHP kosong.")
+                return
+            dphp_cols_set = set(dphp_cols)
+
+            cur.execute("""
+                SELECT DISTINCT 
+                    TRIM(NIK), 
+                    TRIM(COALESCE(TPS, '0'))
+                FROM dphp
+                WHERE IFNULL(DPID,'')='' OR DPID='0'
+            """)
+            nik_tps_sudah_ada = {(r[0], r[1]) for r in cur.fetchall() if r[0]}
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            batch = []
+
+            def safe_get(row, idx):
+                return (row[idx].strip() if idx is not None and idx < len(row) else "")
+
+            def format_nama(nama):
+                if not nama:
+                    return ""
+                parts = nama.split(",")
+                parts[0] = parts[0].upper()
+                if len(parts) > 1:
+                    parts[1] = parts[1].strip().title()
+                return ", ".join(parts).strip()
+
+            def to_upper(val):
+                return val.strip().upper() if val else ""
+
+            def _empty_row_dict():
+                d = {c: "" for c in dphp_cols}
+                if "checked" in d:
+                    d["checked"] = 0
+                return d
+
+            for row in self.reader[1:]:
+                if not row:
+                    continue
+
+                kec_val = safe_get(row, self.idx_kec).replace(" ", "").upper()
+                kel_val = safe_get(row, self.idx_kel).replace(" ", "").upper()
+                if kec_val != self.nama_kec.replace(" ", "") or kel_val != self.nama_desa.replace(" ", ""):
+                    continue
+
+                dpid_val = safe_get(row, self.idx_dpid)
+                ket_val = safe_get(row, self.idx_ket)
+                nik_val = safe_get(row, self.idx_nik)
+                tps_val = safe_get(row, self.idx_tps).lstrip("0") or "0"
+
+                if not nik_val or (nik_val, tps_val) in nik_tps_sudah_ada:
+                    continue
+                if dpid_val not in ("", "0"):
+                    continue
+                if ket_val.upper() != "B":
+                    continue
+
+                rec = _empty_row_dict()
+                rec["DPID"] = ""
+                if "KECAMATAN" in dphp_cols_set:
+                    rec["KECAMATAN"] = self.nama_kec
+                if "DESA" in dphp_cols_set:
+                    rec["DESA"] = self.nama_desa
+                if "NIK" in dphp_cols_set and self.idx_nik is not None:
+                    rec["NIK"] = nik_val
+                if "NKK" in dphp_cols_set and self.idx_nkk is not None:
+                    rec["NKK"] = safe_get(row, self.idx_nkk)
+                if "NAMA" in dphp_cols_set and self.idx_nama is not None:
+                    rec["NAMA"] = format_nama(safe_get(row, self.idx_nama))
+                if "JK" in dphp_cols_set and self.idx_jk is not None:
+                    rec["JK"] = to_upper(safe_get(row, self.idx_jk))
+                if "TMPT_LHR" in dphp_cols_set and self.idx_tempat is not None:
+                    rec["TMPT_LHR"] = to_upper(safe_get(row, self.idx_tempat))
+                if "TGL_LHR" in dphp_cols_set and self.idx_tanggal is not None:
+                    rec["TGL_LHR"] = safe_get(row, self.idx_tanggal)
+                if "STS" in dphp_cols_set and self.idx_status is not None:
+                    rec["STS"] = to_upper(safe_get(row, self.idx_status))
+                if "RT" in dphp_cols_set and self.idx_rt is not None:
+                    rt_raw = str(safe_get(row, self.idx_rt) or "")
+                    rec["RT"] = rt_raw.lstrip("0") or "0"
+                if "RW" in dphp_cols_set and self.idx_rw is not None:
+                    rw_raw = str(safe_get(row, self.idx_rw) or "")
+                    rec["RW"] = rw_raw.lstrip("0") or "0"
+                if "ALAMAT" in dphp_cols_set and self.idx_alamat is not None:
+                    rec["ALAMAT"] = to_upper(safe_get(row, self.idx_alamat))
+                if "DIS" in dphp_cols_set and self.idx_dis is not None:
+                    rec["DIS"] = safe_get(row, self.idx_dis)
+                if "KTPel" in dphp_cols_set:
+                    rec["KTPel"] = to_upper(safe_get(row, self.idx_ektp)) or "S"
+                if "SUMBER" in dphp_cols_set and self.idx_sumber is not None:
+                    rec["SUMBER"] = to_upper(safe_get(row, self.idx_sumber))
+                if "TPS" in dphp_cols_set and self.idx_tps is not None:
+                    rec["TPS"] = tps_val
+
+                rec["KET"] = "B"
+                if "LastUpdate" in dphp_cols_set:
+                    rec["LastUpdate"] = now_str
+                if "JK_ASAL" in rec:
+                    rec["JK_ASAL"] = ""
+                if "TPS_ASAL" in rec:
+                    rec["TPS_ASAL"] = ""
+
+                batch.append(tuple(rec[c] for c in dphp_cols))
+
+            if not batch:
+                self.finished_empty.emit()
+                return
+
+            cur.execute("PRAGMA synchronous = NORMAL;")
+            cur.execute("BEGIN IMMEDIATE;")
+            placeholders = ",".join(["?"] * len(dphp_cols))
+            cols_sql = ",".join([f'"{c}"' for c in dphp_cols])
+            cur.executemany(f'INSERT INTO dphp ({cols_sql}) VALUES ({placeholders})', batch)
+            conn.commit()
+            cur.execute("PRAGMA synchronous = FULL;")
+
+            self.finished_ok.emit(len(batch), now_str)
+
+        except Exception as e:
+            self.finished_error.emit(str(e))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+class SaringEcoklitWorker(QThread):
+    finished_ok = pyqtSignal(int, int, str)   # jumlah diupdate, cocok_count, now_str
+    finished_empty = pyqtSignal()
+    finished_error = pyqtSignal(str)
+
+    def __init__(self, reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+                 idx_nama, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+                 idx_dis, idx_sumber, idx_alamat, idx_ektp,
+                 nama_kec, nama_desa, parent=None):
+        super().__init__(parent)
+        self.reader = reader
+        self.idx_kec = idx_kec
+        self.idx_kel = idx_kel
+        self.idx_dpid = idx_dpid
+        self.idx_ket = idx_ket
+        self.idx_nik = idx_nik
+        self.idx_nkk = idx_nkk
+        self.idx_nama = idx_nama
+        self.idx_tempat = idx_tempat
+        self.idx_tanggal = idx_tanggal
+        self.idx_status = idx_status
+        self.idx_rt = idx_rt
+        self.idx_rw = idx_rw
+        self.idx_dis = idx_dis
+        self.idx_sumber = idx_sumber
+        self.idx_alamat = idx_alamat
+        self.idx_ektp = idx_ektp
+        self.nama_kec = nama_kec
+        self.nama_desa = nama_desa
+
+    def run(self):
+        conn = None
+        try:
+            from db_manager import get_temp_connection
+            conn = get_temp_connection()
+            cur = conn.cursor()
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
+            if not cur.fetchone():
+                self.finished_error.emit("Tabel DPHP belum tersedia.")
+                return
+
+            cur.execute("PRAGMA table_info(dphp)")
+            dphp_cols = [r[1] for r in cur.fetchall()]
+            if not dphp_cols:
+                self.finished_error.emit("Struktur tabel DPHP kosong.")
+                return
+
+            csv_to_dphp = {}
+            def add_if_found(idx, dphp_name):
+                if idx is not None:
+                    csv_to_dphp[idx] = dphp_name
+
+            add_if_found(self.idx_nkk,     "NKK")
+            add_if_found(self.idx_nik,     "NIK")
+            add_if_found(self.idx_nama,    "NAMA")
+            add_if_found(self.idx_tempat,  "TMPT_LHR")
+            add_if_found(self.idx_tanggal, "TGL_LHR")
+            add_if_found(self.idx_status,  "STS")
+            add_if_found(self.idx_alamat,  "ALAMAT")
+            add_if_found(self.idx_rt,      "RT")
+            add_if_found(self.idx_rw,      "RW")
+            add_if_found(self.idx_dis,     "DIS")
+            add_if_found(self.idx_ektp,    "KTPel")
+            add_if_found(self.idx_sumber,  "SUMBER")
+            add_if_found(self.idx_ket,     "KET")
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            update_data = []
+
+            def safe_get(row, idx):
+                return (row[idx].strip() if idx is not None and idx < len(row) else "")
+
+            def format_nama(nama):
+                if not nama:
+                    return ""
+                parts = nama.split(",")
+                parts[0] = parts[0].upper()
+                if len(parts) > 1:
+                    parts[1] = parts[1].strip().title()
+                return ", ".join(parts).strip()
+
+            def to_upper(v):
+                return v.strip().upper() if v else ""
+
+            for row in self.reader[1:]:
+                if not row:
+                    continue
+
+                kec_val = (row[self.idx_kec].strip().replace(" ", "").upper() if self.idx_kec < len(row) else "")
+                kel_val = (row[self.idx_kel].strip().replace(" ", "").upper() if self.idx_kel < len(row) else "")
+                if kec_val != self.nama_kec.replace(" ", "") or kel_val != self.nama_desa.replace(" ", ""):
+                    continue
+
+                dpid_val = safe_get(row, self.idx_dpid)
+                ket_val = safe_get(row, self.idx_ket)
+                if not dpid_val or dpid_val == "0":
+                    continue
+                if ket_val not in ("1", "2", "3", "4", "5", "6", "7", "8"):
+                    continue
+
+                rec = {}
+                for idx_col, dphp_col in csv_to_dphp.items():
+                    if dphp_col in ("JK", "TPS"):
+                        continue
+                    val = safe_get(row, idx_col)
+                    if not val:
+                        continue
+                    if dphp_col in ("RT", "RW") and val.isdigit():
+                        val = str(int(val))
+                    if dphp_col == "NAMA":
+                        val = format_nama(val)
+                    elif dphp_col in ("TMPT_LHR", "STS", "ALAMAT", "KTPel", "SUMBER"):
+                        val = to_upper(val)
+                    rec[dphp_col] = val
+
+                try:
+                    cur.execute("SELECT JK_ASAL, TPS_ASAL FROM dphp WHERE DPID = ?", (dpid_val,))
+                    asal = cur.fetchone()
+                    if asal:
+                        jk_asal, tps_asal = asal
+                        if jk_asal:
+                            rec["JK"] = jk_asal.strip().upper()
+                        if tps_asal:
+                            rec["TPS"] = str(tps_asal).strip()
+                except Exception as e:
+                    print(f"[WARN] Gagal ambil JK_ASAL/TPS_ASAL untuk DPID {dpid_val}: {e}")
+
+                rec.pop("JK_ASAL", None)
+                rec.pop("TPS_ASAL", None)
+                rec["LastUpdate"] = now_str
+                update_data.append((rec, dpid_val))
+
+            if not update_data:
+                self.finished_empty.emit()
+                return
+
+            cur.execute("PRAGMA synchronous = NORMAL;")
+            cur.execute("BEGIN IMMEDIATE;")
+            for rec, dpid in update_data:
+                set_clause = ", ".join([f'"{col}"=?' for col in rec.keys()])
+                values = list(rec.values()) + [dpid]
+                cur.execute(f"UPDATE dphp SET {set_clause} WHERE DPID=?;", values)
+            conn.commit()
+            cur.execute("PRAGMA synchronous = FULL;")
+
+            # Hitung jumlah DPID yang cocok
+            valid_dpid_csv = []
+            for row in self.reader[1:]:
+                if not row:
+                    continue
+                dpid_val = safe_get(row, self.idx_dpid)
+                ket_val = safe_get(row, self.idx_ket)
+                if not dpid_val or dpid_val == "0":
+                    continue
+                if ket_val not in ("1", "2", "3", "4", "5", "6", "7", "8"):
+                    continue
+                valid_dpid_csv.append(dpid_val)
+
+            cocok_count = 0
+            if valid_dpid_csv:
+                placeholders = ",".join("?" * len(valid_dpid_csv))
+                cur.execute(f"SELECT COUNT(*) FROM dphp WHERE DPID IN ({placeholders})", valid_dpid_csv)
+                cocok_count = cur.fetchone()[0]
+
+            self.finished_ok.emit(len(update_data), cocok_count, now_str)
+
+        except Exception as e:
+            self.finished_error.emit(str(e))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+class UbahEcoklitWorker(QThread):
+    finished_ok = pyqtSignal(int, int, str)   # jumlah diupdate, cocok_count, now_str
+    finished_empty = pyqtSignal()
+    finished_error = pyqtSignal(str)
+
+    def __init__(self, reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+                 idx_nama, idx_jk, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+                 idx_dis, idx_sumber, idx_alamat, idx_ektp,
+                 nama_kec, nama_desa, parent=None):
+        super().__init__(parent)
+        self.reader = reader
+        self.idx_kec = idx_kec
+        self.idx_kel = idx_kel
+        self.idx_dpid = idx_dpid
+        self.idx_ket = idx_ket
+        self.idx_nik = idx_nik
+        self.idx_nkk = idx_nkk
+        self.idx_nama = idx_nama
+        self.idx_jk = idx_jk
+        self.idx_tempat = idx_tempat
+        self.idx_tanggal = idx_tanggal
+        self.idx_status = idx_status
+        self.idx_rt = idx_rt
+        self.idx_rw = idx_rw
+        self.idx_dis = idx_dis
+        self.idx_sumber = idx_sumber
+        self.idx_alamat = idx_alamat
+        self.idx_ektp = idx_ektp
+        self.nama_kec = nama_kec
+        self.nama_desa = nama_desa
+
+    def run(self):
+        conn = None
+        try:
+            from db_manager import get_temp_connection
+            conn = get_temp_connection()
+            cur = conn.cursor()
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
+            if not cur.fetchone():
+                self.finished_error.emit("Tabel DPHP belum tersedia.")
+                return
+
+            cur.execute("PRAGMA table_info(dphp)")
+            dphp_cols = [r[1] for r in cur.fetchall()]
+            if not dphp_cols:
+                self.finished_error.emit("Struktur tabel DPHP kosong.")
+                return
+
+            csv_to_dphp = {}
+            def add_if_found(idx, dphp_name):
+                if idx is not None:
+                    csv_to_dphp[idx] = dphp_name
+
+            add_if_found(self.idx_nkk,     "NKK")
+            add_if_found(self.idx_nik,     "NIK")
+            add_if_found(self.idx_nama,    "NAMA")
+            add_if_found(self.idx_jk,      "JK")
+            add_if_found(self.idx_tempat,  "TMPT_LHR")
+            add_if_found(self.idx_tanggal, "TGL_LHR")
+            add_if_found(self.idx_status,  "STS")
+            add_if_found(self.idx_alamat,  "ALAMAT")
+            add_if_found(self.idx_rt,      "RT")
+            add_if_found(self.idx_rw,      "RW")
+            add_if_found(self.idx_dis,     "DIS")
+            add_if_found(self.idx_ektp,    "KTPel")
+            add_if_found(self.idx_sumber,  "SUMBER")
+            add_if_found(self.idx_ket,     "KET")
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            update_data = []
+
+            def safe_get(row, idx):
+                return (row[idx].strip() if idx is not None and idx < len(row) else "")
+
+            def format_nama(nama):
+                if not nama:
+                    return ""
+                parts = nama.split(",")
+                parts[0] = parts[0].upper()
+                if len(parts) > 1:
+                    parts[1] = parts[1].strip().title()
+                return ", ".join(parts).strip()
+
+            def to_upper(v):
+                return v.strip().upper() if v else ""
+
+            for row in self.reader[1:]:
+                if not row:
+                    continue
+
+                kec_val = (row[self.idx_kec].strip().replace(" ", "").upper() if self.idx_kec < len(row) else "")
+                kel_val = (row[self.idx_kel].strip().replace(" ", "").upper() if self.idx_kel < len(row) else "")
+                if kec_val != self.nama_kec.replace(" ", "") or kel_val != self.nama_desa.replace(" ", ""):
+                    continue
+
+                dpid_val = safe_get(row, self.idx_dpid)
+                ket_val = safe_get(row, self.idx_ket)
+
+                if not dpid_val or dpid_val == "0":
+                    continue
+                if ket_val.upper() != "U":
+                    continue
+
+                rec = {}
+                for idx_col, dphp_col in csv_to_dphp.items():
+                    if dphp_col in ("TPS",):
+                        continue
+                    val = safe_get(row, idx_col)
+                    if not val:
+                        continue
+                    if dphp_col in ("RT", "RW") and val.isdigit():
+                        val = str(int(val))
+                    if dphp_col == "NAMA":
+                        val = format_nama(val)
+                    elif dphp_col in ("TMPT_LHR", "STS", "ALAMAT", "KTPel", "SUMBER", "KET", "JK"):
+                        val = to_upper(val)
+                    rec[dphp_col] = val
+
+                try:
+                    cur.execute("SELECT TPS_ASAL FROM dphp WHERE DPID = ?", (dpid_val,))
+                    asal = cur.fetchone()
+                    if asal:
+                        tps_asal = asal[0]
+                        if tps_asal:
+                            rec["TPS"] = str(tps_asal).strip()
+                except Exception as e:
+                    print(f"[WARN] Gagal ambil TPS_ASAL untuk DPID {dpid_val}: {e}")
+
+                rec.pop("JK_ASAL", None)
+                rec.pop("TPS_ASAL", None)
+                rec["LastUpdate"] = now_str
+                update_data.append((rec, dpid_val))
+
+            if not update_data:
+                self.finished_empty.emit()
+                return
+
+            cur.execute("PRAGMA synchronous = NORMAL;")
+            cur.execute("BEGIN IMMEDIATE;")
+            for rec, dpid in update_data:
+                set_clause = ", ".join([f'"{col}"=?' for col in rec.keys()])
+                values = list(rec.values()) + [dpid]
+                cur.execute(f"UPDATE dphp SET {set_clause} WHERE DPID=?;", values)
+            conn.commit()
+            cur.execute("PRAGMA synchronous = FULL;")
+
+            valid_dpid_csv = []
+            for row in self.reader[1:]:
+                if not row:
+                    continue
+                dpid_val = safe_get(row, self.idx_dpid)
+                ket_val = safe_get(row, self.idx_ket).strip().upper()
+                if not dpid_val or dpid_val == "0":
+                    continue
+                if ket_val != "U":
+                    continue
+                valid_dpid_csv.append(dpid_val)
+
+            cocok_count = 0
+            if valid_dpid_csv:
+                placeholders = ",".join("?" * len(valid_dpid_csv))
+                cur.execute(f"SELECT COUNT(*) FROM dphp WHERE DPID IN ({placeholders})", valid_dpid_csv)
+                cocok_count = cur.fetchone()[0]
+
+            self.finished_ok.emit(len(update_data), cocok_count, now_str)
+
+        except Exception as e:
+            self.finished_error.emit(str(e))
+        finally:
             if conn is not None:
                 try:
                     conn.close()
@@ -11883,23 +12446,12 @@ class MainWindow(QMainWindow):
         show_modern_error(self, "Error", f"Gagal import CSV:\n{pesan_error}")        
 
     def import_baruecoklit(self):
-        """
-        Import CSV Ecoklit -> TAMBAH baris ke tabel DPHP tanpa menyentuh data lama.
-        - Nama kolom CSV sangat fleksibel (bisa berbagai versi).
-        - Baris diproses hanya jika DPID kosong/0 dan KET=B/b.
-        - Kolom NAMA dikapitalisasi kecuali kata setelah koma.
-        - Kolom TMPT_LHR, ALAMAT, JK, STS, KTPel, SUMBER, KET dikapital penuh.
-        - Kolom JK_ASAL dan TPS_ASAL sama sekali tidak boleh disentuh dari CSV.
-        - Optimasi kecepatan: PRAGMA synchronous=NORMAL + BEGIN IMMEDIATE.
-        """
-
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Pilih File CSV Ecoklit", "", "CSV Files (*.csv)"
         )
         if not file_path:
             return
 
-        # === Baca CSV ===
         try:
             with open(file_path, newline="", encoding="utf-8") as csvfile:
                 reader = list(csv.reader(csvfile, delimiter="#"))
@@ -11914,7 +12466,6 @@ class MainWindow(QMainWindow):
         header = [h.strip().upper() for h in reader[0]]
         header_idx = {col: i for i, col in enumerate(header)}
 
-        # === Fungsi bantu cari kolom fleksibel super aman ===
         def find_col(possible_names):
             for name in possible_names:
                 pattern = name.replace(" ", "").replace("_", "").upper()
@@ -11922,21 +12473,14 @@ class MainWindow(QMainWindow):
                     col_norm = col.replace(" ", "").replace("_", "").upper()
                     if col_norm.endswith("ASAL"):
                         continue
-                    # 🔹 Cocok persis dulu
                     if col_norm == pattern:
                         return header_idx[col]
-                    # 🔹 Baru kalau mengandung, tapi dengan batas kata supaya "KEL" tidak match "JENIS_KELAMIN"
                     if re.search(rf"\b{re.escape(pattern)}\b", col_norm):
                         return header_idx[col]
             return None
 
-        # === Pastikan CSV valid Ecoklit ===
         idx_sumber = find_col(["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"])
-
-        # Periksa kondisi 1: ada kolom LATITUDE dan LONGITUDE
         ada_latlong = ("LATITUDE" in header and "LONGITUDE" in header)
-
-        # Periksa kondisi 2: semua nilai di kolom KETERANGAN/KET = "COKLIT"
         semua_coklit = False
         if idx_sumber is not None:
             total = 0
@@ -11951,12 +12495,8 @@ class MainWindow(QMainWindow):
             if total > 0 and total == cocok:
                 semua_coklit = True
 
-        # Jika keduanya tidak terpenuhi → tolak
         if not (ada_latlong or semua_coklit):
-            show_modern_warning(
-                self, "Ditolak",
-                "Data yang diimport bukan CSV dari web Ecoklit."
-            )
+            show_modern_warning(self, "Ditolak", "Data yang diimport bukan CSV dari web Ecoklit.")
             return
 
         idx_kec = find_col(["KECAMATAN", "KEC", "DISTRIK", "NAMA KEC", "NAMA_KEC"])
@@ -11968,7 +12508,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang diimport bukan CSV dari web Ecoklit.")
             return
 
-        # === 🔍 Validasi wilayah CSV dengan distinct check ===
         try:
             kecamatan_values = set()
             desa_values = set()
@@ -11976,12 +12515,9 @@ class MainWindow(QMainWindow):
                 if not r:
                     continue
                 if idx_kec < len(r) and r[idx_kec].strip():
-                    # Hapus spasi lalu kapital
-                    val_kec = r[idx_kec].strip().replace(" ", "").upper()
-                    kecamatan_values.add(val_kec)
+                    kecamatan_values.add(r[idx_kec].strip().replace(" ", "").upper())
                 if idx_kel < len(r) and r[idx_kel].strip():
-                    val_desa = r[idx_kel].strip().replace(" ", "").upper()
-                    desa_values.add(val_desa)
+                    desa_values.add(r[idx_kel].strip().replace(" ", "").upper())
 
             if len(kecamatan_values) != 1 or len(desa_values) != 1:
                 show_modern_warning(
@@ -11997,7 +12533,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang di import bukan CSV dari web Ecoklit.")
             return
 
-        # === Perbandingan tanpa spasi juga ===
         if (
             kecamatan_csv.replace(" ", "") != (self._kecamatan or "").replace(" ", "").upper()
             or desa_csv.replace(" ", "") != (self._desa or "").replace(" ", "").upper()
@@ -12009,44 +12544,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # === Siapkan koneksi database ===
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
-            if not cur.fetchone():
-                show_modern_warning(self, "Ditolak", "Data Sidalih masih kosong, silakan import CSV Sidalih terlebih dahulu.")
-                return
-            cur.execute("SELECT 1 FROM dphp LIMIT 1")
-            if not cur.fetchone():
-                show_modern_warning(self, "Ditolak", "Data Sidalih masih kosong, silakan import CSV Sidalih terlebih dahulu.")
-                return
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal memeriksa tabel DPHP:\n{e}")
-            return
-
-        cur.execute("PRAGMA table_info(dphp)")
-        dphp_cols = [r[1] for r in cur.fetchall()]
-        if not dphp_cols:
-            show_modern_warning(self, "Ditolak", "Data Sidalih masih kosong.")
-            return
-        dphp_cols_set = set(dphp_cols)
-
-        # === Ambil kombinasi (NIK, TPS) yang sudah ada dengan DPID kosong ===
-        try:
-            cur.execute("""
-                SELECT DISTINCT 
-                    TRIM(NIK), 
-                    TRIM(COALESCE(TPS, '0'))
-                FROM dphp
-                WHERE IFNULL(DPID,'')='' OR DPID='0'
-            """)
-            nik_tps_sudah_ada = {(r[0], r[1]) for r in cur.fetchall() if r[0]}
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal mengambil data NIK/TPS dari DPHP:\n{e}")
-            return
-
-        # === Cari semua kolom penting ===
         idx_dpid = find_col(["DPID", "ID", "DP ID", "DP_ID"])
         idx_ket = find_col(["KETERANGAN", "KET"])
         idx_nik = find_col(["NIK"])
@@ -12077,167 +12574,71 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Kolom wajib (DPID/ID, KET, NIK) tidak ditemukan.")
             return
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nama_kec, nama_desa = (self._kecamatan or "").upper(), (self._desa or "").upper()
-        batch = []
 
-        def safe_get(row, idx):
-            return (row[idx].strip() if idx is not None and idx < len(row) else "")
+        self._baru_progress = QProgressDialog("Memproses Baru Ecoklit...", None, 0, 0, self)
+        self._baru_progress.setWindowTitle("Baru Ecoklit")
+        self._baru_progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._baru_progress.setCancelButton(None)
+        self._baru_progress.show()
 
-        def format_nama(nama):
-            """Kapitalisasi NAMA, kecuali kata setelah koma (biar gelar tetap benar)."""
-            if not nama:
-                return ""
-            parts = nama.split(",")
-            parts[0] = parts[0].upper()
-            if len(parts) > 1:
-                parts[1] = parts[1].strip().title()
-            return ", ".join(parts).strip()
+        self._baru_worker = BaruEcoklitWorker(
+            reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+            idx_nama, idx_jk, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+            idx_dis, idx_sumber, idx_alamat, idx_tps, idx_ektp,
+            nama_kec, nama_desa, parent=self,
+        )
+        self._baru_worker.finished_ok.connect(self._on_baru_ecoklit_sukses)
+        self._baru_worker.finished_empty.connect(self._on_baru_ecoklit_kosong)
+        self._baru_worker.finished_error.connect(self._on_baru_ecoklit_gagal)
+        self._baru_worker.start()
 
-        def to_upper(val):
-            return val.strip().upper() if val else ""
+    def _tutup_progress_baru(self):
+        if getattr(self, "_baru_progress", None) is not None:
+            self._baru_progress.close()
+            self._baru_progress = None
 
-        def _empty_row_dict():
-            d = {c: "" for c in dphp_cols}
-            if "checked" in d:
-                d["checked"] = 0
-            return d
+    def _refresh_tabel_setelah_ecoklit(self):
+        cur_page = getattr(self, "current_page", 1)
+        with self.freeze_ui():
+            self.load_data_from_db()
+            self.update_pagination()
+            self.show_page(cur_page if 1 <= cur_page <= self.total_pages else 1)
+            self.connect_header_events()
+            self.sort_data(auto=True)
+            if hasattr(self, "_warnai_baris_berdasarkan_ket"):
+                self._warnai_baris_berdasarkan_ket()
+            if hasattr(self, "_terapkan_warna_ke_tabel_aktif"):
+                self._terapkan_warna_ke_tabel_aktif()
 
-        # === Proses baris CSV ===
-        for row in reader[1:]:
-            if not row:
-                continue
-
-            kec_val = safe_get(row, idx_kec).replace(" ", "").upper()
-            kel_val = safe_get(row, idx_kel).replace(" ", "").upper()
-            if kec_val != nama_kec.replace(" ", "") or kel_val != nama_desa.replace(" ", ""):
-                continue
-
-            dpid_val = safe_get(row, idx_dpid)
-            ket_val = safe_get(row, idx_ket)
-            nik_val = safe_get(row, idx_nik)
-            tps_val = safe_get(row, idx_tps).lstrip("0") or "0"
-
-            # ✅ Cek kombinasi NIK+TPS agar unik untuk DPID kosong
-            if not nik_val or (nik_val, tps_val) in nik_tps_sudah_ada:
-                continue
-            if dpid_val not in ("", "0"):
-                continue
-            if ket_val.upper() != "B":
-                continue
-
-            rec = _empty_row_dict()
-
-            # Pastikan tidak menyentuh kolom *_ASAL
-            rec["DPID"] = ""
-            if "KECAMATAN" in dphp_cols_set:
-                rec["KECAMATAN"] = nama_kec
-            if "DESA" in dphp_cols_set:
-                rec["DESA"] = nama_desa
-            if "NIK" in dphp_cols_set and idx_nik is not None:
-                rec["NIK"] = nik_val
-            if "NKK" in dphp_cols_set and idx_nkk is not None:
-                rec["NKK"] = safe_get(row, idx_nkk)
-            if "NAMA" in dphp_cols_set and idx_nama is not None:
-                rec["NAMA"] = format_nama(safe_get(row, idx_nama))
-            if "JK" in dphp_cols_set and idx_jk is not None:
-                rec["JK"] = to_upper(safe_get(row, idx_jk))
-            if "TMPT_LHR" in dphp_cols_set and idx_tempat is not None:
-                rec["TMPT_LHR"] = to_upper(safe_get(row, idx_tempat))
-            if "TGL_LHR" in dphp_cols_set and idx_tanggal is not None:
-                rec["TGL_LHR"] = safe_get(row, idx_tanggal)
-            if "STS" in dphp_cols_set and idx_status is not None:
-                rec["STS"] = to_upper(safe_get(row, idx_status))
-            if "RT" in dphp_cols_set and idx_rt is not None:
-                rt_raw = str(safe_get(row, idx_rt) or "")
-                rt_val = rt_raw.lstrip("0") or "0"
-                rec["RT"] = rt_val
-            if "RW" in dphp_cols_set and idx_rw is not None:
-                rw_raw = str(safe_get(row, idx_rw) or "")
-                rw_val = rw_raw.lstrip("0") or "0"
-                rec["RW"] = rw_val
-            if "ALAMAT" in dphp_cols_set and idx_alamat is not None:
-                rec["ALAMAT"] = to_upper(safe_get(row, idx_alamat))
-            if "DIS" in dphp_cols_set and idx_dis is not None:
-                rec["DIS"] = safe_get(row, idx_dis)
-            if "KTPel" in dphp_cols_set:
-                rec["KTPel"] = to_upper(safe_get(row, idx_ektp)) or "S"
-            if "SUMBER" in dphp_cols_set and idx_sumber is not None:
-                rec["SUMBER"] = to_upper(safe_get(row, idx_sumber))
-            if "TPS" in dphp_cols_set and idx_tps is not None:
-                rec["TPS"] = tps_val
-
-            rec["KET"] = "B"
-            if "LastUpdate" in dphp_cols_set:
-                rec["LastUpdate"] = now_str
-
-            # Hapus kolom *_ASAL jika ada (perlindungan ekstra)
-            if "JK_ASAL" in rec:
-                rec["JK_ASAL"] = ""
-            if "TPS_ASAL" in rec:
-                rec["TPS_ASAL"] = ""
-
-            batch.append(tuple(rec[c] for c in dphp_cols))
-
-        if not batch:
-            show_modern_info(self, "Kosong", "Tidak ada data Baru Ecoklit yang valid untuk ditambahkan.")
-            return
-
-        # === Simpan ke DB ===
+    def _on_baru_ecoklit_sukses(self, jumlah, now_str):
+        self._tutup_progress_baru()
         try:
-            cur.execute("PRAGMA synchronous = NORMAL;")
-            cur.execute("BEGIN IMMEDIATE;")
-            placeholders = ",".join(["?"] * len(dphp_cols))
-            cols_sql = ",".join([f'"{c}"' for c in dphp_cols])
-            cur.executemany(f'INSERT INTO dphp ({cols_sql}) VALUES ({placeholders})', batch)
-            conn.commit()
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal menambahkan data ke DPHP:\n{e}")
-            return
-        finally:
-            cur.execute("PRAGMA synchronous = FULL;")
-
-        # === Refresh tampilan ===
-        try:
-            cur_page = getattr(self, "current_page", 1)
-            with self.freeze_ui():
-                self.load_data_from_db()
-                self.update_pagination()
-                self.show_page(cur_page if 1 <= cur_page <= self.total_pages else 1)
-                self.connect_header_events()
-                self.sort_data(auto=True)
-                if hasattr(self, "_warnai_baris_berdasarkan_ket"):
-                    self._warnai_baris_berdasarkan_ket()
-                if hasattr(self, "_terapkan_warna_ke_tabel_aktif"):
-                    self._terapkan_warna_ke_tabel_aktif()
+            self._refresh_tabel_setelah_ecoklit()
         except Exception as e:
             show_modern_error(self, "Error", f"Data tersimpan tapi gagal refresh tabel:\n{e}")
             return
-
         show_modern_info(
             self, "Sukses",
-            f"Berhasil menambahkan {len(batch)} data Baru Ecoklit ke DPHP.\n"
+            f"Berhasil menambahkan {jumlah} data Baru Ecoklit ke DPHP.\n"
             f"Waktu import: {now_str}"
         )
 
+    def _on_baru_ecoklit_kosong(self):
+        self._tutup_progress_baru()
+        show_modern_info(self, "Kosong", "Tidak ada data Baru Ecoklit yang valid untuk ditambahkan.")
+
+    def _on_baru_ecoklit_gagal(self, pesan_error):
+        self._tutup_progress_baru()
+        show_modern_error(self, "Error", f"Gagal menambahkan data ke DPHP:\n{pesan_error}")
+
     def import_saringecoklit(self):
-        """
-        Import CSV Ecoklit → PERBARUI data di tabel DPHP berdasarkan DPID.
-        - Hanya memproses baris dengan DPID tidak kosong/0.
-        - Hanya memproses data dengan KETERANGAN = 1–8.
-        - Data menggantikan data lama di DPHP berdasarkan kolom DPID.
-        - Kolom DPID, CEK_DATA, JK_ASAL, TPS_ASAL tidak diubah.
-        - Kolom JK diisi dari JK_ASAL, TPS diisi dari TPS_ASAL (bukan dari CSV).
-        - Data dengan KECAMATAN/DESA berbeda dilewati.
-        - Optimasi: synchronous=NORMAL + BEGIN IMMEDIATE.
-        """
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Pilih File CSV Ecoklit", "", "CSV Files (*.csv)"
         )
         if not file_path:
             return
 
-        # === 1️⃣ Baca CSV ===
         try:
             with open(file_path, newline="", encoding="utf-8") as csvfile:
                 reader = list(csv.reader(csvfile, delimiter="#"))
@@ -12251,7 +12652,6 @@ class MainWindow(QMainWindow):
         header = [h.strip().upper() for h in reader[0]]
         header_idx = {col: i for i, col in enumerate(header)}
 
-        # 🔧 Tambahan: fungsi pencarian header fleksibel
         def find_col(possible_names):
             for name in possible_names:
                 pattern = name.replace(" ", "").replace("_", "").upper()
@@ -12259,21 +12659,14 @@ class MainWindow(QMainWindow):
                     col_norm = col.replace(" ", "").replace("_", "").upper()
                     if col_norm.endswith("ASAL"):
                         continue
-                    # 🔹 Cocok persis dulu
                     if col_norm == pattern:
                         return header_idx[col]
-                    # 🔹 Baru kalau mengandung, tapi dengan batas kata supaya "KEL" tidak match "JENIS_KELAMIN"
                     if re.search(rf"\b{re.escape(pattern)}\b", col_norm):
                         return header_idx[col]
             return None
 
-        # === Pastikan CSV valid Ecoklit ===
         idx_sumber = find_col(["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"])
-
-        # Periksa kondisi 1: ada kolom LATITUDE dan LONGITUDE
         ada_latlong = ("LATITUDE" in header and "LONGITUDE" in header)
-
-        # Periksa kondisi 2: semua nilai di kolom KETERANGAN/KET = "COKLIT"
         semua_coklit = False
         if idx_sumber is not None:
             total = 0
@@ -12288,12 +12681,8 @@ class MainWindow(QMainWindow):
             if total > 0 and total == cocok:
                 semua_coklit = True
 
-        # Jika keduanya tidak terpenuhi → tolak
         if not (ada_latlong or semua_coklit):
-            show_modern_warning(
-                self, "Ditolak",
-                "Data yang diimport bukan CSV dari web Ecoklit."
-            )
+            show_modern_warning(self, "Ditolak", "Data yang diimport bukan CSV dari web Ecoklit.")
             return
 
         idx_kec = find_col(["KECAMATAN", "KEC", "DISTRIK", "NAMA KEC", "NAMA_KEC"])
@@ -12302,7 +12691,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang di import bukan CSV dari web Ecoklit.")
             return
 
-        # === 🔍 Validasi wilayah CSV dengan distinct check ===
         try:
             kecamatan_values = set()
             desa_values = set()
@@ -12310,12 +12698,9 @@ class MainWindow(QMainWindow):
                 if not r:
                     continue
                 if idx_kec < len(r) and r[idx_kec].strip():
-                    # Hapus spasi lalu kapital
-                    val_kec = r[idx_kec].strip().replace(" ", "").upper()
-                    kecamatan_values.add(val_kec)
+                    kecamatan_values.add(r[idx_kec].strip().replace(" ", "").upper())
                 if idx_kel < len(r) and r[idx_kel].strip():
-                    val_desa = r[idx_kel].strip().replace(" ", "").upper()
-                    desa_values.add(val_desa)
+                    desa_values.add(r[idx_kel].strip().replace(" ", "").upper())
 
             if len(kecamatan_values) != 1 or len(desa_values) != 1:
                 show_modern_warning(
@@ -12331,7 +12716,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang di import bukan CSV dari web Ecoklit.")
             return
 
-        # === Perbandingan tanpa spasi juga ===
         if (
             kecamatan_csv.replace(" ", "") != (self._kecamatan or "").replace(" ", "").upper()
             or desa_csv.replace(" ", "") != (self._desa or "").replace(" ", "").upper()
@@ -12343,31 +12727,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # === 3️⃣ Koneksi DB ===
-        conn = get_connection()
-        cur = conn.cursor()
-
-        # Pastikan tabel dphp tersedia
-        try:
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
-            if not cur.fetchone():
-                show_modern_warning(self, "Ditolak", "Tabel DPHP belum tersedia.")
-                return
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal memeriksa tabel DPHP:\n{e}")
-            return
-
-        cur.execute("PRAGMA table_info(dphp)")
-        dphp_cols = [r[1] for r in cur.fetchall()]
-        if not dphp_cols:
-            show_modern_warning(self, "Ditolak", "Struktur tabel DPHP kosong.")
-            return
-
-        # === 4️⃣ Mapping kolom CSV → DPHP (fleksibel)
         idx_dpid    = find_col(["DPID", "ID", "DP ID", "DP_ID"])
         idx_ket     = find_col(["KETERANGAN", "KET"])
         idx_nama    = find_col(["NAMA", "NAMA LENGKAP", "NAMA_LENGKAP"])
-        idx_jk      = find_col(["KELAMIN", "JENIS_KELAMIN", "JENISKELAMIN", "JENIS KELAMIN", "JK"])
         idx_nik     = find_col(["NIK"])
         idx_nkk     = find_col(["NKK", "NO KK", "NO_KK"])
         idx_tempat  = find_col(["TEMPAT LAHIR", "TMPTLHR", "TMPT_LHR", "TEMPAT_LAHIR", "TMPT LAHIR", "TMPT_LAHIR", "TEMPATLAHIR"])
@@ -12378,195 +12740,65 @@ class MainWindow(QMainWindow):
         idx_dis     = find_col(["DISABILITAS", "DIS", "DIFABEL", "DIF"])
         idx_sumber  = find_col(["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"])
         idx_alamat  = find_col(["ALAMAT", "ALMT", "KAMPUNG", "JALAN"])
-        idx_tps     = find_col(["TPS", "NO TPS", "NO_TPS"])
         idx_ektp    = find_col(["EKTP", "KTP", "KTPEL", "KTP EL", "KTP_EL", "E KTP", "E_KTP"])
 
         if idx_dpid is None or idx_ket is None:
             show_modern_warning(self, "Error", "Kolom DPID atau KETERANGAN tidak ditemukan di CSV.")
             return
 
-        csv_to_dphp = {}
-        def add_if_found(idx, dphp_name):
-            if idx is not None:
-                csv_to_dphp[idx] = dphp_name
-
-        add_if_found(idx_nkk,     "NKK")
-        add_if_found(idx_nik,     "NIK")
-        add_if_found(idx_nama,    "NAMA")
-        #add_if_found(idx_jk,      "JK")          # ← tetap dicatat tapi akan diabaikan di loop
-        add_if_found(idx_tempat,  "TMPT_LHR")
-        add_if_found(idx_tanggal, "TGL_LHR")
-        add_if_found(idx_status,  "STS")
-        add_if_found(idx_alamat,  "ALAMAT")
-        add_if_found(idx_rt,      "RT")
-        add_if_found(idx_rw,      "RW")
-        add_if_found(idx_dis,     "DIS")
-        add_if_found(idx_ektp,    "KTPel")
-        add_if_found(idx_sumber,  "SUMBER")
-        add_if_found(idx_ket,     "KET")
-        #add_if_found(idx_tps,     "TPS")        # ← tetap dicatat tapi akan diabaikan di loop
-
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nama_kec, nama_desa = (self._kecamatan or "").upper(), (self._desa or "").upper()
-        update_data = []
 
-        def safe_get(row, idx):
-            return (row[idx].strip() if idx is not None and idx < len(row) else "")
+        self._saring_progress = QProgressDialog("Memproses Saring Ecoklit...", None, 0, 0, self)
+        self._saring_progress.setWindowTitle("Saring Ecoklit")
+        self._saring_progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._saring_progress.setCancelButton(None)
+        self._saring_progress.show()
 
-        def format_nama(nama):
-            if not nama:
-                return ""
-            parts = nama.split(",")
-            parts[0] = parts[0].upper()
-            if len(parts) > 1:
-                parts[1] = parts[1].strip().title()
-            return ", ".join(parts).strip()
+        self._saring_worker = SaringEcoklitWorker(
+            reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+            idx_nama, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+            idx_dis, idx_sumber, idx_alamat, idx_ektp,
+            nama_kec, nama_desa, parent=self,
+        )
+        self._saring_worker.finished_ok.connect(self._on_saring_ecoklit_sukses)
+        self._saring_worker.finished_empty.connect(self._on_saring_ecoklit_kosong)
+        self._saring_worker.finished_error.connect(self._on_saring_ecoklit_gagal)
+        self._saring_worker.start()
 
-        def to_upper(v):
-            return v.strip().upper() if v else ""
+    def _tutup_progress_saring(self):
+        if getattr(self, "_saring_progress", None) is not None:
+            self._saring_progress.close()
+            self._saring_progress = None
 
-        # === 5️⃣ Loop filter data valid ===
-        for row in reader[1:]:
-            if not row:
-                continue
-
-            kec_val = (row[idx_kec].strip().replace(" ", "").upper() if idx_kec < len(row) else "")
-            kel_val = (row[idx_kel].strip().replace(" ", "").upper() if idx_kel < len(row) else "")
-            if kec_val != nama_kec.replace(" ", "") or kel_val != nama_desa.replace(" ", ""):
-                continue
-
-
-            dpid_val = safe_get(row, idx_dpid)
-            ket_val = safe_get(row, idx_ket)
-            if not dpid_val or dpid_val == "0":
-                continue
-            if ket_val not in ("1","2","3","4","5","6","7","8"):
-                continue
-
-            rec = {}
-            for idx_col, dphp_col in csv_to_dphp.items():
-                # ⚠️ Abaikan kolom JK dan TPS (diambil dari *_ASAL)
-                if dphp_col in ("JK", "TPS"):
-                    continue
-
-                val = safe_get(row, idx_col)
-                if not val:
-                    continue
-                if dphp_col in ("RT", "RW") and val.isdigit():
-                    val = str(int(val))
-                if dphp_col == "NAMA":
-                    val = format_nama(val)
-                elif dphp_col in ("TMPT_LHR", "STS", "ALAMAT", "KTPel", "SUMBER"):
-                    val = to_upper(val)
-                rec[dphp_col] = val
-
-            # 🔹 Isi JK & TPS dari kolom *_ASAL di DB
-            try:
-                cur.execute("SELECT JK_ASAL, TPS_ASAL FROM dphp WHERE DPID = ?", (dpid_val,))
-                asal = cur.fetchone()
-                if asal:
-                    jk_asal, tps_asal = asal
-                    if jk_asal:
-                        rec["JK"] = jk_asal.strip().upper()
-                    if tps_asal:
-                        rec["TPS"] = str(tps_asal).strip()
-            except Exception as e:
-                print(f"[WARN] Gagal ambil JK_ASAL/TPS_ASAL untuk DPID {dpid_val}: {e}")
-
-            # Bersihkan rec dari kolom *_ASAL (perlindungan ekstra)
-            rec.pop("JK_ASAL", None)
-            rec.pop("TPS_ASAL", None)
-            rec["LastUpdate"] = now_str
-            update_data.append((rec, dpid_val))
-
-        if not update_data:
-            show_modern_info(self, "Kosong", "Tidak ada data Saring Ecoklit yang valid untuk diperbarui.")
-            return
-
-        # === 6️⃣ Update cepat dengan transaksi tunggal ===
+    def _on_saring_ecoklit_sukses(self, jumlah, cocok_count, now_str):
+        self._tutup_progress_saring()
         try:
-            cur.execute("PRAGMA synchronous = NORMAL;")
-            cur.execute("BEGIN IMMEDIATE;")
-            for rec, dpid in update_data:
-                set_clause = ", ".join([f'"{col}"=?' for col in rec.keys()])
-                values = list(rec.values()) + [dpid]
-                cur.execute(f"UPDATE dphp SET {set_clause} WHERE DPID=?;", values)
-            conn.commit()
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal memperbarui data DPHP:\n{e}")
-            return
-        finally:
-            cur.execute("PRAGMA synchronous = FULL;")
-
-        # === 7️⃣ Refresh tampilan ===
-        try:
-            cur_page = getattr(self, "current_page", 1)
-            with self.freeze_ui():
-                self.load_data_from_db()
-                self.update_pagination()
-                self.show_page(cur_page if 1 <= cur_page <= self.total_pages else 1)
-                self.connect_header_events()
-                self.sort_data(auto=True)
-                if hasattr(self, "_warnai_baris_berdasarkan_ket"):
-                    self._warnai_baris_berdasarkan_ket()
-                if hasattr(self, "_terapkan_warna_ke_tabel_aktif"):
-                    self._terapkan_warna_ke_tabel_aktif()
+            self._refresh_tabel_setelah_ecoklit()
         except Exception as e:
             show_modern_error(self, "Error", f"Data tersimpan tapi gagal refresh tabel:\n{e}")
             return
-
-        # === Hitung jumlah DPID yang cocok (memenuhi syarat & ditemukan di DPHP) ===
-        try:
-            # Ambil semua DPID valid dari CSV (dengan KET 1–8 dan DPID ≠ kosong/0)
-            valid_dpid_csv = []
-            for row in reader[1:]:
-                if not row:
-                    continue
-                dpid_val = safe_get(row, idx_dpid)
-                ket_val = safe_get(row, idx_ket)
-                if not dpid_val or dpid_val == "0":
-                    continue
-                if ket_val not in ("1", "2", "3", "4", "5", "6", "7", "8"):
-                    continue
-                valid_dpid_csv.append(dpid_val)
-
-            cocok_count = 0
-            if valid_dpid_csv:
-                placeholders = ",".join("?" * len(valid_dpid_csv))
-                cur.execute(f"SELECT COUNT(*) FROM dphp WHERE DPID IN ({placeholders})", valid_dpid_csv)
-                cocok_count = cur.fetchone()[0]
-        except Exception as e:
-            #print(f"[WARN] Gagal menghitung DPID cocok: {e}")
-            cocok_count = 0
-
-        # === Tampilkan notifikasi sukses ===
         show_modern_info(
-            self,
-            "Sukses",
-            f"Berhasil memperbarui {len(update_data)} data Saring Ecoklit di DPHP.\n"
+            self, "Sukses",
+            f"Berhasil memperbarui {jumlah} data Saring Ecoklit di DPHP.\n"
             f"Data diupdate = {cocok_count} data\n"
             f"Waktu update: {now_str}"
         )
 
-    def import_ubahecoklit(self):
-        """
-        Import CSV Ecoklit → PERBARUI data di tabel DPHP berdasarkan DPID.
-        - Hanya memproses baris dengan DPID tidak kosong/0.
-        - Hanya memproses data dengan KETERANGAN = U/u.
-        - Data menggantikan data lama di DPHP berdasarkan kolom DPID.
-        - Kolom DPID, CEK_DATA, JK_ASAL, TPS_ASAL, KECAMATAN, dan DESA tidak diubah.
-        - Kolom lain (NKK sampai TPS) diperbarui.
-        - Data dengan KECAMATAN/DESA berbeda dilewati.
-        - Optimasi: synchronous=NORMAL + BEGIN IMMEDIATE.
-        """
+    def _on_saring_ecoklit_kosong(self):
+        self._tutup_progress_saring()
+        show_modern_info(self, "Kosong", "Tidak ada data Saring Ecoklit yang valid untuk diperbarui.")
 
+    def _on_saring_ecoklit_gagal(self, pesan_error):
+        self._tutup_progress_saring()
+        show_modern_error(self, "Error", f"Gagal memperbarui data DPHP:\n{pesan_error}")
+
+    def import_ubahecoklit(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Pilih File CSV Ecoklit (Ubah)", "", "CSV Files (*.csv)"
         )
         if not file_path:
             return
 
-        # === 1️⃣ Baca CSV ===
         try:
             with open(file_path, newline="", encoding="utf-8") as csvfile:
                 reader = list(csv.reader(csvfile, delimiter="#"))
@@ -12580,7 +12812,6 @@ class MainWindow(QMainWindow):
         header = [h.strip().upper() for h in reader[0]]
         header_idx = {col: i for i, col in enumerate(header)}
 
-        # 🔧 Tambahan: fungsi pencarian header fleksibel
         def find_col(possible_names):
             for name in possible_names:
                 pattern = name.replace(" ", "").replace("_", "").upper()
@@ -12588,21 +12819,14 @@ class MainWindow(QMainWindow):
                     col_norm = col.replace(" ", "").replace("_", "").upper()
                     if col_norm.endswith("ASAL"):
                         continue
-                    # 🔹 Cocok persis dulu
                     if col_norm == pattern:
                         return header_idx[col]
-                    # 🔹 Baru kalau mengandung, tapi dengan batas kata supaya "KEL" tidak match "JENIS_KELAMIN"
                     if re.search(rf"\b{re.escape(pattern)}\b", col_norm):
                         return header_idx[col]
             return None
 
-        # === Pastikan CSV valid Ecoklit ===
         idx_sumber = find_col(["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"])
-
-        # Periksa kondisi 1: ada kolom LATITUDE dan LONGITUDE
         ada_latlong = ("LATITUDE" in header and "LONGITUDE" in header)
-
-        # Periksa kondisi 2: semua nilai di kolom KETERANGAN/KET = "COKLIT"
         semua_coklit = False
         if idx_sumber is not None:
             total = 0
@@ -12617,12 +12841,8 @@ class MainWindow(QMainWindow):
             if total > 0 and total == cocok:
                 semua_coklit = True
 
-        # Jika keduanya tidak terpenuhi → tolak
         if not (ada_latlong or semua_coklit):
-            show_modern_warning(
-                self, "Ditolak",
-                "Data yang diimport bukan CSV dari web Ecoklit."
-            )
+            show_modern_warning(self, "Ditolak", "Data yang diimport bukan CSV dari web Ecoklit.")
             return
 
         idx_kec = find_col(["KECAMATAN", "KEC", "DISTRIK", "NAMA KEC", "NAMA_KEC"])
@@ -12631,7 +12851,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang di import bukan CSV dari web Ecoklit.")
             return
 
-        # === 🔍 Validasi wilayah CSV dengan distinct check ===
         try:
             kecamatan_values = set()
             desa_values = set()
@@ -12639,12 +12858,9 @@ class MainWindow(QMainWindow):
                 if not r:
                     continue
                 if idx_kec < len(r) and r[idx_kec].strip():
-                    # Hapus spasi lalu kapital
-                    val_kec = r[idx_kec].strip().replace(" ", "").upper()
-                    kecamatan_values.add(val_kec)
+                    kecamatan_values.add(r[idx_kec].strip().replace(" ", "").upper())
                 if idx_kel < len(r) and r[idx_kel].strip():
-                    val_desa = r[idx_kel].strip().replace(" ", "").upper()
-                    desa_values.add(val_desa)
+                    desa_values.add(r[idx_kel].strip().replace(" ", "").upper())
 
             if len(kecamatan_values) != 1 or len(desa_values) != 1:
                 show_modern_warning(
@@ -12660,7 +12876,6 @@ class MainWindow(QMainWindow):
             show_modern_warning(self, "Error", "Data yang di import bukan CSV dari web Ecoklit.")
             return
 
-        # === Perbandingan tanpa spasi juga ===
         if (
             kecamatan_csv.replace(" ", "") != (self._kecamatan or "").replace(" ", "").upper()
             or desa_csv.replace(" ", "") != (self._desa or "").replace(" ", "").upper()
@@ -12672,28 +12887,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # === 3️⃣ Koneksi DB ===
-        conn = get_connection()
-        cur = conn.cursor()
-
-        # Pastikan tabel dphp tersedia
-        try:
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dphp'")
-            if not cur.fetchone():
-                show_modern_warning(self, "Ditolak", "Tabel DPHP belum tersedia.")
-                return
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal memeriksa tabel DPHP:\n{e}")
-            return
-
-        cur.execute("PRAGMA table_info(dphp)")
-        dphp_cols = [r[1] for r in cur.fetchall()]
-        if not dphp_cols:
-            show_modern_warning(self, "Ditolak", "Struktur tabel DPHP kosong.")
-            return
-        dphp_cols_set = set(dphp_cols)
-
-        # === 4️⃣ Mapping kolom CSV → DPHP (fleksibel)
         idx_dpid    = find_col(["DPID", "ID", "DP ID", "DP_ID"])
         idx_ket     = find_col(["KETERANGAN", "KET"])
         idx_nama    = find_col(["NAMA", "NAMA LENGKAP", "NAMA_LENGKAP"])
@@ -12708,175 +12901,57 @@ class MainWindow(QMainWindow):
         idx_dis     = find_col(["DISABILITAS", "DIS", "DIFABEL", "DIF"])
         idx_sumber  = find_col(["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"])
         idx_alamat  = find_col(["ALAMAT", "ALMT", "KAMPUNG", "JALAN"])
-        idx_tps     = find_col(["TPS", "NO TPS", "NO_TPS"])
         idx_ektp    = find_col(["EKTP", "KTP", "KTPEL", "KTP EL", "KTP_EL", "E KTP", "E_KTP"])
 
         if idx_dpid is None or idx_ket is None:
             show_modern_warning(self, "Error", "Kolom DPID atau KETERANGAN tidak ditemukan di CSV.")
             return
 
-        csv_to_dphp = {}
-        def add_if_found(idx, dphp_name):
-            if idx is not None:
-                csv_to_dphp[idx] = dphp_name
-
-        add_if_found(idx_nkk,     "NKK")
-        add_if_found(idx_nik,     "NIK")
-        add_if_found(idx_nama,    "NAMA")
-        add_if_found(idx_jk,      "JK")
-        add_if_found(idx_tempat,  "TMPT_LHR")
-        add_if_found(idx_tanggal, "TGL_LHR")
-        add_if_found(idx_status,  "STS")
-        add_if_found(idx_alamat,  "ALAMAT")
-        add_if_found(idx_rt,      "RT")
-        add_if_found(idx_rw,      "RW")
-        add_if_found(idx_dis,     "DIS")
-        add_if_found(idx_ektp,    "KTPel")
-        add_if_found(idx_sumber,  "SUMBER")
-        add_if_found(idx_ket,     "KET")
-
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nama_kec, nama_desa = (self._kecamatan or "").upper(), (self._desa or "").upper()
-        update_data = []
 
-        def safe_get(row, idx):
-            return (row[idx].strip() if idx is not None and idx < len(row) else "")
+        self._ubah_progress = QProgressDialog("Memproses Ubah Ecoklit...", None, 0, 0, self)
+        self._ubah_progress.setWindowTitle("Ubah Ecoklit")
+        self._ubah_progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._ubah_progress.setCancelButton(None)
+        self._ubah_progress.show()
 
-        def format_nama(nama):
-            if not nama:
-                return ""
-            parts = nama.split(",")
-            parts[0] = parts[0].upper()
-            if len(parts) > 1:
-                parts[1] = parts[1].strip().title()
-            return ", ".join(parts).strip()
+        self._ubah_worker = UbahEcoklitWorker(
+            reader, idx_kec, idx_kel, idx_dpid, idx_ket, idx_nik, idx_nkk,
+            idx_nama, idx_jk, idx_tempat, idx_tanggal, idx_status, idx_rt, idx_rw,
+            idx_dis, idx_sumber, idx_alamat, idx_ektp,
+            nama_kec, nama_desa, parent=self,
+        )
+        self._ubah_worker.finished_ok.connect(self._on_ubah_ecoklit_sukses)
+        self._ubah_worker.finished_empty.connect(self._on_ubah_ecoklit_kosong)
+        self._ubah_worker.finished_error.connect(self._on_ubah_ecoklit_gagal)
+        self._ubah_worker.start()
 
-        def to_upper(v):
-            return v.strip().upper() if v else ""
+    def _tutup_progress_ubah(self):
+        if getattr(self, "_ubah_progress", None) is not None:
+            self._ubah_progress.close()
+            self._ubah_progress = None
 
-        # === 5️⃣ Loop filter data valid ===
-        for row in reader[1:]:
-            if not row:
-                continue
-
-            kec_val = (row[idx_kec].strip().replace(" ", "").upper() if idx_kec < len(row) else "")
-            kel_val = (row[idx_kel].strip().replace(" ", "").upper() if idx_kel < len(row) else "")
-            if kec_val != nama_kec.replace(" ", "") or kel_val != nama_desa.replace(" ", ""):
-                continue
-
-            dpid_val = safe_get(row, idx_dpid)
-            ket_val = safe_get(row, idx_ket)
-
-            # ✅ Hanya DPID tidak kosong/0 dan KET = U/u
-            if not dpid_val or dpid_val == "0":
-                continue
-            if ket_val.upper() != "U":
-                continue
-            ket_val = "U"
-
-            rec = {}
-            for idx_col, dphp_col in csv_to_dphp.items():
-                # ⚠️ Abaikan kolom TPS (diambil dari *_ASAL)
-                if dphp_col in ("TPS",):
-                    continue
-
-                val = safe_get(row, idx_col)
-                if not val:
-                    continue
-                if dphp_col in ("RT", "RW") and val.isdigit():
-                    val = str(int(val))
-                if dphp_col == "NAMA":
-                    val = format_nama(val)
-                elif dphp_col in ("TMPT_LHR", "STS", "ALAMAT", "KTPel", "SUMBER", "KET", "JK"):
-                    val = to_upper(val)
-                rec[dphp_col] = val
-
-            # 🔹 Isi TPS dari kolom *_ASAL di DB
-            try:
-                cur.execute("SELECT TPS_ASAL FROM dphp WHERE DPID = ?", (dpid_val,))
-                asal = cur.fetchone()
-                if asal:
-                    tps_asal = asal[0]          # ✅ ambil elemen pertama
-                    if tps_asal:
-                        rec["TPS"] = str(tps_asal).strip()
-            except Exception as e:
-                print(f"[WARN] Gagal ambil TPS_ASAL untuk DPID {dpid_val}: {e}")
-
-            # Bersihkan rec dari kolom *_ASAL (perlindungan ekstra)
-            rec.pop("JK_ASAL", None)
-            rec.pop("TPS_ASAL", None)
-            rec["LastUpdate"] = now_str
-            update_data.append((rec, dpid_val))
-
-        if not update_data:
-            show_modern_info(self, "Kosong", "Tidak ada data Ubah Ecoklit yang valid untuk diperbarui.")
-            return
-
-        # === 6️⃣ Update cepat dengan transaksi tunggal ===
+    def _on_ubah_ecoklit_sukses(self, jumlah, cocok_count, now_str):
+        self._tutup_progress_ubah()
         try:
-            cur.execute("PRAGMA synchronous = NORMAL;")
-            cur.execute("BEGIN IMMEDIATE;")
-
-            for rec, dpid in update_data:
-                set_clause = ", ".join([f'"{col}"=?' for col in rec.keys()])
-                values = list(rec.values()) + [dpid]
-                cur.execute(f"UPDATE dphp SET {set_clause} WHERE DPID=?;", values)
-
-            conn.commit()
-        except Exception as e:
-            show_modern_error(self, "Error", f"Gagal memperbarui data DPHP:\n{e}")
-            return
-        finally:
-            cur.execute("PRAGMA synchronous = FULL;")
-
-        # === 7️⃣ Refresh tampilan ===
-        try:
-            cur_page = getattr(self, "current_page", 1)
-            with self.freeze_ui():
-                self.load_data_from_db()
-                self.update_pagination()
-                self.show_page(cur_page if 1 <= cur_page <= self.total_pages else 1)
-                self.connect_header_events()
-                self.sort_data(auto=True)
-                if hasattr(self, "_warnai_baris_berdasarkan_ket"):
-                    self._warnai_baris_berdasarkan_ket()
-                if hasattr(self, "_terapkan_warna_ke_tabel_aktif"):
-                    self._terapkan_warna_ke_tabel_aktif()
+            self._refresh_tabel_setelah_ecoklit()
         except Exception as e:
             show_modern_error(self, "Error", f"Data tersimpan tapi gagal refresh tabel:\n{e}")
             return
-
-        # === Hitung jumlah DPID yang cocok (memenuhi syarat & ditemukan di DPHP) ===
-        try:
-            valid_dpid_csv = []
-            for row in reader[1:]:
-                if not row:
-                    continue
-                dpid_val = safe_get(row, idx_dpid)
-                ket_val = safe_get(row, idx_ket).strip().upper()  # ✅ normalize huruf besar
-                if not dpid_val or dpid_val == "0":
-                    continue
-                if ket_val != "U":  # ✅ cukup periksa satu huruf besar saja
-                    continue
-                valid_dpid_csv.append(dpid_val)
-
-            cocok_count = 0
-            if valid_dpid_csv:
-                placeholders = ",".join("?" * len(valid_dpid_csv))
-                cur.execute(f"SELECT COUNT(*) FROM dphp WHERE DPID IN ({placeholders})", valid_dpid_csv)
-                cocok_count = cur.fetchone()[0]
-        except Exception as e:
-            # print(f"[WARN] Gagal menghitung DPID cocok: {e}")
-            cocok_count = 0
-
-        # === Tampilkan notifikasi sukses ===
         show_modern_info(
-            self,
-            "Sukses",
-            f"Berhasil memperbarui {len(update_data)} Perubahan Data Ecoklit di DPHP.\n"
+            self, "Sukses",
+            f"Berhasil memperbarui {jumlah} Perubahan Data Ecoklit di DPHP.\n"
             f"Data diupdate = {cocok_count} data\n"
             f"Waktu update: {now_str}"
         )
+
+    def _on_ubah_ecoklit_kosong(self):
+        self._tutup_progress_ubah()
+        show_modern_info(self, "Kosong", "Tidak ada data Ubah Ecoklit yang valid untuk diperbarui.")
+
+    def _on_ubah_ecoklit_gagal(self, pesan_error):
+        self._tutup_progress_ubah()
+        show_modern_error(self, "Error", f"Gagal memperbarui data DPHP:\n{pesan_error}")
 
     @with_safe_db
     def load_data_from_db(self, conn=None):
