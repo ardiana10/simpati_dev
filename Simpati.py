@@ -6033,11 +6033,23 @@ class CsvImportWorker(QThread):
                     map_indices.append((idx, target_col))
 
             cur.executescript("""
-                PRAGMA busy_timeout = 8000;
+                PRAGMA busy_timeout = 20000;
                 PRAGMA synchronous = OFF;
                 PRAGMA temp_store = MEMORY;
                 PRAGMA journal_mode = WAL;
             """)
+
+            for attempt in range(5):
+                try:
+                    cur.execute("BEGIN IMMEDIATE;")
+                    break
+                except Exception as lock_err:
+                    if "locked" in str(lock_err).lower() or "busy" in str(lock_err).lower():
+                        time.sleep(0.5)
+                        continue
+                    raise
+            else:
+                raise Exception("Database sedang sibuk (locked) setelah beberapa kali percobaan. Coba import ulang.")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS data_awal (
@@ -6153,7 +6165,6 @@ class CsvImportWorker(QThread):
             if batch_values:
                 cur.executemany(f"INSERT INTO {self.tbl_name} VALUES ({placeholders})", batch_values)
                 cur.execute(f"UPDATE {self.tbl_name} SET KET='0'")
-                conn.commit()
 
             cur.execute(f"""
                 INSERT INTO data_awal (TPS, L, P, LP)
@@ -6170,12 +6181,16 @@ class CsvImportWorker(QThread):
                         ELSE 0
                     END
             """)
-            conn.commit()
-
+            
+            conn.commit()  # ✅ commit tunggal untuk seluruh transaksi import
             self.progress.emit(100)
             self.finished_ok.emit(len(batch_values))
-
         except Exception as e:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             self.finished_error.emit(str(e))
         finally:
             # ✅ WAJIB ditutup — ini koneksi baru, bukan koneksi global aplikasi
