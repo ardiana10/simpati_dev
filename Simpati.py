@@ -661,24 +661,24 @@ class SettingDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # === Style checkbox ===
-        self.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                border: 1px solid #555;
-                border-radius: 4px;
-                background: transparent;
-            }
-            QCheckBox::indicator:unchecked {
-                background: transparent;
-                border: 1px solid #888;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #ff9900;
-                border: 1px solid #ff9900;
-                image: url(:/qt-project.org/styles/commonstyle/images/checkmark.png);
-            }
-        """)
+        #self.setStyleSheet("""
+        #    QCheckBox::indicator {
+        #        width: 14px;
+        #        height: 14px;
+        #        border: 1px solid #555;
+        #        border-radius: 4px;
+        #        background: transparent;
+        #    }
+        #    QCheckBox::indicator:unchecked {
+        #        background: transparent;
+        #        border: 1px solid #888;
+        #    }
+        #    QCheckBox::indicator:checked {
+        #        background-color: #ff9900;
+        #        border: 1px solid #ff9900;
+        #        image: url(:/qt-project.org/styles/commonstyle/images/checkmark.png);
+        #    }
+        #""")
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -702,8 +702,7 @@ class SettingDialog(QDialog):
 
         self.checks = {}
         for col, label in self.columns:
-            cb = QCheckBox(label)
-            cb.setStyleSheet("font-size: 10pt;")
+            cb = CustomCheckBox(label, style="red_outline")
             vbox.addWidget(cb)
             self.checks[col] = cb
 
@@ -799,10 +798,10 @@ def apply_global_palette(app):
 # Custom Checkbox untuk Filter Sidebar
 # =====================================================
 class CustomCheckBox(QCheckBox):
-    def __init__(self, text="", parent=None):
+    def __init__(self, text="", parent=None, style="orange"):
         super().__init__(text, parent)
-        # self.theme = "dark" <- Dihapus
-        
+        self.checkbox_style = style  # "orange" (default lama) atau "red_outline" (putih+ceklis merah)
+
         # Set smaller size and better margins
         self.setMinimumHeight(18)
         self.setMaximumHeight(22)
@@ -828,8 +827,21 @@ class CustomCheckBox(QCheckBox):
         checkbox_rect = QRect(2, (self.height() - checkbox_size) // 2, checkbox_size, checkbox_size)
         
         # Draw checkbox background and border
-        if self.isChecked():
-            # Orange background when checked
+        if self.checkbox_style == "red_outline":
+            # Putih dengan border, ceklis merah (gaya di screenshot)
+            painter.setBrush(QColor("white"))
+            painter.setPen(QPen(QColor("#999"), 1))
+            painter.drawRoundedRect(checkbox_rect, 2, 2)
+
+            if self.isChecked():
+                painter.setPen(QPen(QColor("#e02020"), 1.8))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawLine(checkbox_rect.left() + 3, checkbox_rect.center().y(),
+                                 checkbox_rect.center().x(), checkbox_rect.bottom() - 3)
+                painter.drawLine(checkbox_rect.center().x(), checkbox_rect.bottom() - 3,
+                                 checkbox_rect.right() - 3, checkbox_rect.top() + 3)
+        elif self.isChecked():
+            # Orange background when checked (gaya lama, tetap dipakai di tempat lain)
             painter.setBrush(QColor("#ff9900"))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(checkbox_rect, 3, 3)
@@ -4426,6 +4438,9 @@ class LoginWindow(QMainWindow):
         form_layout.addWidget(self.tahapan_label)
         form_layout.addWidget(self.tahapan_combo)
 
+        # ✅ Nonaktifkan (grayscale) tahapan yang belum boleh dipilih
+        self._update_status_tahapan_combo()
+
         # === Tombol Login ===
         self.login_button = QPushButton("Login")
         self.login_button.clicked.connect(self.check_login)
@@ -4568,6 +4583,40 @@ class LoginWindow(QMainWindow):
                     }
                 """)
         return super().eventFilter(obj, event)
+
+    def _tabel_ada_isi(self, nama_tabel):
+        """Cek apakah tabel tertentu ada dan memiliki minimal 1 baris data."""
+        if not self.conn:
+            return False
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (nama_tabel,)
+            )
+            if not cur.fetchone():
+                return False
+            cur.execute(f"SELECT 1 FROM {nama_tabel} LIMIT 1")
+            return cur.fetchone() is not None
+        except Exception as e:
+            print(f"[WARN] Gagal memeriksa tabel {nama_tabel}: {e}")
+            return False
+
+    def _update_status_tahapan_combo(self):
+        """Grayscale-kan DPSHP/DPSHPA di combo Tahapan bila data prasyaratnya belum ada."""
+        model = self.tahapan_combo.model()
+
+        dphp_ada = self._tabel_ada_isi("dphp")
+        dpshp_ada = self._tabel_ada_isi("dpshp")
+
+        # index: 0 = "-- Pilih Tahapan --", 1 = DPHP, 2 = DPSHP, 3 = DPSHPA
+        item_dpshp = model.item(2)
+        item_dpshpa = model.item(3)
+
+        if item_dpshp is not None:
+            item_dpshp.setEnabled(dphp_ada)   # DPSHP butuh DPHP terisi
+        if item_dpshpa is not None:
+            item_dpshpa.setEnabled(dpshp_ada)  # DPSHPA butuh DPSHP terisi    
 
     # === Proses login ===
     def check_login(self):
@@ -6051,15 +6100,24 @@ class CsvImportWorker(QThread):
             else:
                 raise Exception("Database sedang sibuk (locked) setelah beberapa kali percobaan. Coba import ulang.")
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS data_awal (
+            data_awal_tbl = {
+                "dphp": "data_awal_dphp",
+                "dpshp": "data_awal_dphsp",
+                "dpshpa": "data_awal_dphspa"
+            }.get(self.tbl_name)
+
+            if not data_awal_tbl:
+                raise Exception(f"Tabel data awal tidak dikenal: {self.tbl_name}")
+
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {data_awal_tbl} (
                     TPS TEXT,
                     L INTEGER DEFAULT 0,
                     P INTEGER DEFAULT 0,
                     LP INTEGER DEFAULT 0
                 )
             """)
-            cur.execute("DELETE FROM data_awal")
+            cur.execute(f"DELETE FROM {data_awal_tbl}")
             cur.execute(f"DELETE FROM {self.tbl_name}")
 
             def format_nama(nama: str) -> str:
@@ -6167,7 +6225,7 @@ class CsvImportWorker(QThread):
                 cur.execute(f"UPDATE {self.tbl_name} SET KET='0'")
 
             cur.execute(f"""
-                INSERT INTO data_awal (TPS, L, P, LP)
+                INSERT INTO {data_awal_tbl} (TPS, L, P, LP)
                 SELECT
                     COALESCE(TPS, '0') AS TPS,
                     SUM(CASE WHEN JK='L' THEN 1 ELSE 0 END),
@@ -6555,6 +6613,727 @@ class SaringEcoklitWorker(QThread):
                 except Exception:
                     pass
 
+class SidalihSyncWorker(QThread):
+    progress = pyqtSignal(int)
+    finished_ok = pyqtSignal(int)
+    finished_error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        reader,
+        header,
+        idx_status,
+        idx_tahapan,
+        tbl_name,
+        parent=None
+    ):
+        super().__init__(parent)
+
+        self.reader = reader
+        self.header = header
+        self.idx_status = idx_status
+        self.idx_tahapan = idx_tahapan
+        self.tbl_name = tbl_name
+
+    def run(self):
+        conn = None
+
+        try:
+            import re
+            import time
+            from db_manager import get_temp_connection
+
+            conn = get_temp_connection()
+            cur = conn.cursor()
+
+            # ============================================================
+            # PRAGMA
+            # ============================================================
+            cur.executescript("""
+                PRAGMA busy_timeout = 20000;
+                PRAGMA synchronous = OFF;
+                PRAGMA temp_store = MEMORY;
+                PRAGMA journal_mode = WAL;
+            """)
+
+            # ============================================================
+            # Pastikan tabel aktif tersedia
+            # ============================================================
+            cur.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name=?",
+                (self.tbl_name,)
+            )
+
+            if not cur.fetchone():
+                raise Exception(
+                    f"Tabel {self.tbl_name} belum tersedia."
+                )
+
+            # ============================================================
+            # Struktur tabel aktif
+            # ============================================================
+            cur.execute(f"PRAGMA table_info({self.tbl_name})")
+            tbl_cols = [row[1] for row in cur.fetchall()]
+
+            if not tbl_cols:
+                raise Exception(
+                    f"Struktur tabel {self.tbl_name} kosong."
+                )
+
+            # ============================================================
+            # Normalisasi nama header CSV
+            #
+            # Contoh:
+            # TAHAPAN_ID
+            # tahapan_id
+            # TAHAPAN_Id
+            # tahapan-id
+            # tahapanid
+            # tahapan id
+            #
+            # semuanya menjadi:
+            # TAHAPANID
+            # ============================================================
+            def normalize_header(value):
+                return re.sub(
+                    r"[^A-Z0-9]",
+                    "",
+                    str(value).upper()
+                )
+
+            normalized_header = {
+                normalize_header(name): idx
+                for idx, name in enumerate(self.header)
+            }
+
+            # ============================================================
+            # Helper ambil nilai CSV TANPA mengubah isi aslinya
+            # ============================================================
+            def raw_value(row, idx):
+                if idx is None:
+                    return ""
+
+                if idx >= len(row):
+                    return ""
+
+                return row[idx]
+
+            # ============================================================
+            # Alias kolom CSV -> kolom tabel
+            #
+            # Nilai TIDAK di-uppercase / trim / format.
+            # Tujuannya agar data tahapan terbesar tetap seperti CSV.
+            # ============================================================
+            alias_groups = {
+                "KECAMATAN": [
+                    "KECAMATAN",
+                    "KEC",
+                    "DISTRIK",
+                    "NAMA KEC",
+                    "NAMA_KEC"
+                ],
+
+                "DESA": [
+                    "KELURAHAN",
+                    "KEL",
+                    "DESA",
+                    "KEL/DESA",
+                    "DESA/KEL",
+                    "KELURAHAN/DESA",
+                    "DESA/KELURAHAN",
+                    "NAMA KEL",
+                    "NAMA_KEL",
+                    "NAMA DESA",
+                    "NAMA_DESA"
+                ],
+
+                "DPID": [
+                    "DPID",
+                    "ID",
+                    "DP_ID",
+                    "DP ID"
+                ],
+
+                "NKK": [
+                    "NKK",
+                    "NO KK",
+                    "NO_KK"
+                ],
+
+                "NIK": [
+                    "NIK"
+                ],
+
+                "NAMA": [
+                    "NAMA",
+                    "NAMA LENGKAP",
+                    "NAMA_LENGKAP"
+                ],
+
+                "JK": [
+                    "KELAMIN",
+                    "JENIS_KELAMIN",
+                    "JENISKELAMIN",
+                    "JENIS KELAMIN",
+                    "JK"
+                ],
+
+                "TMPT_LHR": [
+                    "TEMPAT LAHIR",
+                    "TMPTLHR",
+                    "TMPT_LHR",
+                    "TEMPAT_LAHIR",
+                    "TMPT LAHIR",
+                    "TMPT_LAHIR",
+                    "TEMPATLAHIR"
+                ],
+
+                "TGL_LHR": [
+                    "TANGGAL LAHIR",
+                    "TGLLHR",
+                    "TGL_LHR",
+                    "TANGGAL_LAHIR",
+                    "TGL LHR",
+                    "TGL_LAHIR",
+                    "TGL LAHIR",
+                    "TANGGALLAHIR"
+                ],
+
+                "STS": [
+                    "STS KAWIN",
+                    "STS_KAWIN",
+                    "STATUS KAWIN",
+                    "STATUS_KAWIN",
+                    "STATUSKAWIN",
+                    "STS"
+                ],
+
+                "ALAMAT": [
+                    "ALAMAT",
+                    "ALMT",
+                    "KAMPUNG",
+                    "JALAN"
+                ],
+
+                "RT": [
+                    "RT",
+                    "NO_RT",
+                    "NO RT"
+                ],
+
+                "RW": [
+                    "RW",
+                    "NO_RW",
+                    "NO RW"
+                ],
+
+                "DIS": [
+                    "DISABILITAS",
+                    "DIS",
+                    "DIFABEL",
+                    "DIF"
+                ],
+
+                "KTPel": [
+                    "EKTP",
+                    "KTP",
+                    "KTPEL",
+                    "KTP EL",
+                    "KTP_EL",
+                    "E KTP",
+                    "E_KTP"
+                ],
+
+                "SUMBER": [
+                    "SUMBER",
+                    "SMBR",
+                    "SUMBER DATA",
+                    "SUMBER_DATA",
+                    "SUMBERDATA"
+                ],
+
+                "KET": [
+                    "KETERANGAN",
+                    "KET"
+                ],
+
+                "TPS": [
+                    "TPS"
+                ],
+
+                "LastUpdate": [
+                    "UPDATED_AT",
+                    "UPDATED AT",
+                    "LAST_UPDATE",
+                    "LAST UPDATE"
+                ],
+
+                "checked": [
+                    "CHECKED"
+                ],
+
+                "CEK_DATA": [
+                    "CEK_DATA",
+                    "CEK DATA"
+                ],
+
+                "NKK_ASAL": [
+                    "NKK_ASAL",
+                    "NKK ASAL"
+                ],
+
+                "NIK_ASAL": [
+                    "NIK_ASAL",
+                    "NIK ASAL"
+                ],
+
+                "NAMA_ASAL": [
+                    "NAMA_ASAL",
+                    "NAMA ASAL"
+                ],
+
+                "JK_ASAL": [
+                    "JK_ASAL",
+                    "JK ASAL"
+                ],
+
+                "TMPT_LHR_ASAL": [
+                    "TMPT_LHR_ASAL",
+                    "TMPT LHR ASAL"
+                ],
+
+                "TGL_LHR_ASAL": [
+                    "TGL_LHR_ASAL",
+                    "TGL LHR ASAL"
+                ],
+
+                "STS_ASAL": [
+                    "STS_ASAL",
+                    "STS ASAL"
+                ],
+
+                "ALAMAT_ASAL": [
+                    "ALAMAT_ASAL",
+                    "ALAMAT ASAL"
+                ],
+
+                "RT_ASAL": [
+                    "RT_ASAL",
+                    "RT ASAL"
+                ],
+
+                "RW_ASAL": [
+                    "RW_ASAL",
+                    "RW ASAL"
+                ],
+
+                "DIS_ASAL": [
+                    "DIS_ASAL",
+                    "DIS ASAL"
+                ],
+
+                "KTPel_ASAL": [
+                    "KTPEL_ASAL",
+                    "KTPEL ASAL",
+                    "KTPel_ASAL"
+                ],
+
+                "SUMBER_ASAL": [
+                    "SUMBER_ASAL",
+                    "SUMBER ASAL"
+                ],
+
+                "TPS_ASAL": [
+                    "TPS_ASAL",
+                    "TPS ASAL"
+                ],
+            }
+
+            # ============================================================
+            # Buat mapping index CSV -> kolom tabel
+            # ============================================================
+            column_indices = {}
+
+            for target_col, aliases in alias_groups.items():
+
+                for alias in aliases:
+
+                    key = normalize_header(alias)
+
+                    if key in normalized_header:
+                        column_indices[target_col] = normalized_header[key]
+                        break
+
+            # ============================================================
+            # Cari semua tahapan_id valid
+            # Hanya baris yang STATUS != DELETE
+            # ============================================================
+            tahapan_values = []
+
+            for row in self.reader[1:]:
+
+                if not row:
+                    continue
+
+                status_val = raw_value(
+                    row,
+                    self.idx_status
+                ).strip().upper()
+
+                if status_val == "DELETE":
+                    continue
+
+                raw_tahapan = raw_value(
+                    row,
+                    self.idx_tahapan
+                ).strip()
+
+                if raw_tahapan == "":
+                    raise Exception(
+                        "Ditemukan data dengan TAHAPAN_ID kosong."
+                    )
+
+                try:
+                    tahapan_num = int(raw_tahapan)
+                except ValueError:
+                    raise Exception(
+                        f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}"
+                    )
+
+                tahapan_values.append(tahapan_num)
+
+            if not tahapan_values:
+                raise Exception(
+                    "Tidak ada data Sidalih yang dapat disinkronkan."
+                )
+
+            # ============================================================
+            # Ambil TAHAPAN_ID paling besar
+            # ============================================================
+            max_tahapan_id = max(tahapan_values)
+
+            # ============================================================
+            # Kolom yang digunakan
+            # ============================================================
+            ordered_cols = [
+                "checked",
+                "KECAMATAN",
+                "DESA",
+                "DPID",
+                "NKK",
+                "NIK",
+                "NAMA",
+                "JK",
+                "TMPT_LHR",
+                "TGL_LHR",
+                "STS",
+                "ALAMAT",
+                "RT",
+                "RW",
+                "DIS",
+                "KTPel",
+                "SUMBER",
+                "KET",
+                "TPS",
+                "LastUpdate",
+                "CEK_DATA",
+                "NKK_ASAL",
+                "NIK_ASAL",
+                "NAMA_ASAL",
+                "JK_ASAL",
+                "TMPT_LHR_ASAL",
+                "TGL_LHR_ASAL",
+                "STS_ASAL",
+                "ALAMAT_ASAL",
+                "RT_ASAL",
+                "RW_ASAL",
+                "DIS_ASAL",
+                "KTPel_ASAL",
+                "SUMBER_ASAL",
+                "TPS_ASAL"
+            ]
+
+            # Pastikan semua kolom memang ada di tabel
+            missing_cols = [
+                col for col in ordered_cols
+                if col not in tbl_cols
+            ]
+
+            if missing_cols:
+                raise Exception(
+                    f"Kolom tabel {self.tbl_name} tidak ditemukan: "
+                    f"{', '.join(missing_cols)}"
+                )
+
+            # ============================================================
+            # Siapkan data
+            # ============================================================
+            batch_values = []
+
+            total_rows = max(1, len(self.reader) - 1)
+
+            for i, row in enumerate(
+                self.reader[1:],
+                start=1
+            ):
+
+                if not row:
+                    continue
+
+                # ========================================================
+                # FILTER STATUS
+                # DELETE:
+                #   semua tahapan -> tidak dibawa
+                # TMS:
+                #   hanya dibuang jika bukan tahapan terbaru
+                # ========================================================
+                status_val = raw_value(
+                    row,
+                    self.idx_status
+                ).strip().upper()
+
+
+                if status_val == "DELETE":
+                    continue
+
+                # ========================================================
+                # TAHAPAN_ID
+                # ========================================================
+                raw_tahapan = raw_value(
+                    row,
+                    self.idx_tahapan
+                ).strip()
+
+                # TIDAK BOLEH DI-SKIP DI SINI.
+                # Karena sebelumnya sudah divalidasi.
+                if not raw_tahapan:
+                    raise Exception(
+                        "Ditemukan data dengan TAHAPAN_ID kosong."
+                    )
+
+                try:
+                    tahapan_num = int(raw_tahapan)
+                except (ValueError, TypeError):
+                    raise Exception(
+                        f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}"
+                    )
+
+                # ========================================================
+                # TENTUKAN TAHAPAN TERBESAR
+                # ========================================================
+                is_latest = (
+                    tahapan_num == max_tahapan_id
+                )
+
+                if (
+                    not is_latest
+                    and status_val == "TMS"
+                ):
+                    continue
+
+                # ========================================================
+                # AMBIL SEMUA DATA DARI CSV APA ADANYA
+                #
+                # Tidak uppercase
+                # Tidak trim
+                # Tidak format ulang
+                # Tidak mengubah nilai sumber
+                # ========================================================
+                data = {}
+
+                for col in ordered_cols:
+
+                    if col in column_indices:
+
+                        val = raw_value(
+                            row,
+                            column_indices[col]
+                        )
+
+                        if val is None:
+                            val = ""
+
+                        val = str(val).strip().upper()
+
+                        data[col] = val
+
+                    else:
+                        data[col] = ""
+
+                # ========================================================
+                # ATUR KOLOM INTERNAL
+                #
+                # Jika kolom tersebut TIDAK ADA di CSV,
+                # baru gunakan nilai default.
+                # ========================================================
+                if "checked" not in column_indices:
+                    data["checked"] = 0
+
+                # ========================================================
+                # *_ASAL
+                #
+                # Jika kolom *_ASAL memang ada di CSV,
+                # PERTAHANKAN NILAI CSV APA ADANYA.
+                #
+                # Jika tidak ada, baru salin dari kolom utama.
+                # ========================================================
+                asal_map = {
+                    "NKK_ASAL": "NKK",
+                    "NIK_ASAL": "NIK",
+                    "NAMA_ASAL": "NAMA",
+                    "JK_ASAL": "JK",
+                    "TMPT_LHR_ASAL": "TMPT_LHR",
+                    "TGL_LHR_ASAL": "TGL_LHR",
+                    "STS_ASAL": "STS",
+                    "ALAMAT_ASAL": "ALAMAT",
+                    "RT_ASAL": "RT",
+                    "RW_ASAL": "RW",
+                    "DIS_ASAL": "DIS",
+                    "KTPel_ASAL": "KTPel",
+                    "SUMBER_ASAL": "SUMBER",
+                    "TPS_ASAL": "TPS",
+                }
+
+                for asal_col, source_col in asal_map.items():
+
+                    if asal_col not in column_indices:
+                        data[asal_col] = data.get(
+                            source_col,
+                            ""
+                        )
+
+                # ========================================================
+                # ATUR KET
+                #
+                # TAHAPAN TERBESAR:
+                #     TIDAK DIUBAH SAMA SEKALI
+                #
+                # TAHAPAN LEBIH KECIL:
+                #     HANYA KET yang diubah menjadi "0"
+                # ========================================================
+                if not is_latest:
+                    data["KET"] = "0"
+
+                # ========================================================
+                # MASUKKAN KE BATCH
+                # ========================================================
+                batch_values.append(
+                    tuple(
+                        data.get(col, "")
+                        for col in ordered_cols
+                    )
+                )
+
+                # ========================================================
+                # PROGRESS
+                # ========================================================
+                if i % max(1, total_rows // 100) == 0:
+                    self.progress.emit(
+                        min(
+                            100,
+                            int(i / total_rows * 100)
+                        )
+                    )
+
+            # ============================================================
+            # Tidak ada data
+            # ============================================================
+            if not batch_values:
+                raise Exception(
+                    "Tidak ada data yang dapat disinkronkan."
+                )
+
+            # ============================================================
+            # TRANSAKSI
+            # ============================================================
+            for attempt in range(5):
+
+                try:
+                    cur.execute("BEGIN IMMEDIATE;")
+                    break
+
+                except Exception as lock_err:
+
+                    if (
+                        "locked" in str(lock_err).lower()
+                        or "busy" in str(lock_err).lower()
+                    ):
+                        time.sleep(0.5)
+                        continue
+
+                    raise
+
+            else:
+                raise Exception(
+                    "Database sedang sibuk (locked). "
+                    "Silakan coba Sync Sidalih kembali."
+                )
+
+            # ============================================================
+            # HAPUS ISI TABEL AKTIF SAJA
+            #
+            # TIDAK MENYENTUH:
+            # data_awal
+            # data_awal_dphp
+            # data_awal_dphsp
+            # data_awal_dphspa
+            # ============================================================
+            cur.execute(
+                f"DELETE FROM {self.tbl_name}"
+            )
+
+            # ============================================================
+            # INSERT HASIL SYNC
+            # ============================================================
+            placeholders = ",".join(
+                ["?"] * len(ordered_cols)
+            )
+
+            cols_sql = ",".join(
+                f'"{col}"'
+                for col in ordered_cols
+            )
+
+            cur.executemany(
+                f"""
+                INSERT INTO {self.tbl_name}
+                ({cols_sql})
+                VALUES ({placeholders})
+                """,
+                batch_values
+            )
+
+            # ============================================================
+            # COMMIT
+            # ============================================================
+            conn.commit()
+
+            self.progress.emit(100)
+            self.finished_ok.emit(
+                len(batch_values)
+            )
+
+        except Exception as e:
+
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            self.finished_error.emit(
+                str(e)
+            )
+
+        finally:
+
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
 class UbahEcoklitWorker(QThread):
     finished_ok = pyqtSignal(int, int, str)   # jumlah diupdate, cocok_count, now_str
     finished_empty = pyqtSignal()
@@ -6862,17 +7641,17 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("File")
         action_dashboard = QAction(" Dashboard", self)
-        action_dashboard.setShortcut("Alt+H")
+        action_dashboard.setShortcut("Alt+D")
         action_dashboard.triggered.connect(self.show_dashboard_page)
         file_menu.addAction(action_dashboard)
 
         action_pemutakhiran = QAction(" Pemutakhiran Data", self)
-        action_pemutakhiran.setShortcut("Alt+C")
+        action_pemutakhiran.setShortcut("Alt+P")
         action_pemutakhiran.triggered.connect(self.show_data_page)
         file_menu.addAction(action_pemutakhiran)
 
         action_unggah_reguler = QAction(" Unggah Webgrid TPS Reguler", self)
-        action_unggah_reguler.setShortcut("Alt+I")
+        action_unggah_reguler.setShortcut("Alt+U")
         action_unggah_reguler.triggered.connect(self.open_unggah_reguler)
         file_menu.addAction(action_unggah_reguler)
 
@@ -6881,7 +7660,7 @@ class MainWindow(QMainWindow):
         #file_menu.addAction(action_rekap)
 
         action_import = QAction(" Import CSV", self)
-        action_import.setShortcut("Alt+M")
+        action_import.setShortcut("Alt+I")
         action_import.triggered.connect(self.import_csv)
         file_menu.addAction(action_import)
         file_menu.addSeparator()
@@ -6938,7 +7717,7 @@ class MainWindow(QMainWindow):
 
         help_menu = menubar.addMenu("Help")
         action_setting = QAction(" Setting Aplikasi", self)
-        action_setting.setShortcut("Alt+T")
+        action_setting.setShortcut("Alt+S")
         action_setting.triggered.connect(self.show_setting_dialog)
         help_menu.addAction(action_setting)
 
@@ -6949,6 +7728,14 @@ class MainWindow(QMainWindow):
         action_backup = QAction(" BackUp Data", self)
         action_backup.triggered.connect(lambda: backup_simpati(self))
         help_menu.addAction(action_backup)
+
+        action_sync_sidalih = QAction(" Sync Sidalih", self)
+        action_sync_sidalih.triggered.connect(self.sync_sidalih)
+        help_menu.addAction(action_sync_sidalih)
+
+        # Aktif hanya jika tabel aktif sudah berisi data
+        self.action_sync_sidalih = action_sync_sidalih
+        QTimer.singleShot(300, self._update_sync_sidalih_button)
 
         action_about = QAction(" Tentang Aplikasi", self)
         action_about.triggered.connect(lambda: show_about_dialog(self))
@@ -7579,6 +8366,9 @@ class MainWindow(QMainWindow):
         self.load_data_from_db()
         self.update_pagination()
         self.apply_column_visibility()
+
+        # Pastikan Sync Sidalih mengikuti isi tabel aktif
+        QTimer.singleShot(100, self._update_sync_sidalih_button)
 
         # ✅ Panggilan ditunda SETELAH semua siap (hindari atribut belum ada)
         #QTimer.singleShot(0, self.auto_fit_columns)                 # auto fit + hide ulang kolom sensitif
@@ -9869,15 +10659,19 @@ class MainWindow(QMainWindow):
         self.header_checkbox.setTristate(False)
         self.header_checkbox.setChecked(False)
 
-        self.header_checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 12px; height: 12px;
-                border: 2px solid #555;
-                border-radius: 4px;
-                background: white;
-            }
-            QCheckBox::indicator:checked { background-color: #ff9900; }
-        """)
+        #self.header_checkbox.setStyleSheet("""
+        #    QCheckBox::indicator {
+        #        width: 14px; height: 14px;
+        #        border: 1px solid #888;
+        #        border-radius: 3px;
+        #        background: white;
+        #    }
+        #    QCheckBox::indicator:checked {
+        #        background-color: white;
+        #        border: 1px solid #555;
+        #        image: url(:/qt-project.org/styles/commonstyle/images/checkmark.png);
+        #    }
+        #""")
 
         # 🔗 Sinyal
         self.header_checkbox.pressed.connect(self._on_header_checkbox_pressed)  # ⬅️ TAMBAH INI
@@ -10043,18 +10837,18 @@ class MainWindow(QMainWindow):
         actions = [
             ("🔁 Resolve", lambda: self._aktifkan_pemilih_auto(checked_rows)),
             ("🔥 Hapus", lambda: self._hapus_pemilih_auto(checked_rows)),
-            ("🚫 1. Meninggal", lambda: self._set_status_auto(checked_rows, "1", "Meninggal")),
-            ("⚠️ 2. Ganda", lambda: self._set_status_auto(checked_rows, "2", "Ganda")),
-            ("🧒 3. Di Bawah Umur", lambda: self._set_status_auto(checked_rows, "3", "Di Bawah Umur")),
-            ("🏠 4. Pindah Domisili", lambda: self._set_status_auto(checked_rows, "4", "Pindah Domisili")),
-            ("🌍 5. WNA", lambda: self._set_status_auto(checked_rows, "5", "WNA")),
-            ("🪖 6. TNI", lambda: self._set_status_auto(checked_rows, "6", "TNI")),
-            ("👮‍♂️ 7. Polri", lambda: self._set_status_auto(checked_rows, "7", "Polri")),
+            #("🚫 1. Meninggal", lambda: self._set_status_auto(checked_rows, "1", "Meninggal")),
+            #("⚠️ 2. Ganda", lambda: self._set_status_auto(checked_rows, "2", "Ganda")),
+            #("🧒 3. Di Bawah Umur", lambda: self._set_status_auto(checked_rows, "3", "Di Bawah Umur")),
+            #("🏠 4. Pindah Domisili", lambda: self._set_status_auto(checked_rows, "4", "Pindah Domisili")),
+            #("🌍 5. WNA", lambda: self._set_status_auto(checked_rows, "5", "WNA")),
+            #("🪖 6. TNI", lambda: self._set_status_auto(checked_rows, "6", "TNI")),
+            #("👮‍♂️ 7. Polri", lambda: self._set_status_auto(checked_rows, "7", "Polri")),
         ]
 
         # --- Hanya tambahkan "Salah TPS" kalau tahap = DPHP
-        if tahap_aktif == "DPHP":
-            actions.append(("📍 8. Salah TPS", lambda: self._set_status_auto(checked_rows, "8", "Salah TPS")))
+        #if tahap_aktif == "DPHP":
+        #    actions.append(("📍 8. Salah TPS", lambda: self._set_status_auto(checked_rows, "8", "Salah TPS")))
 
         for text, func in actions:
             act = QAction(text, self)
@@ -10474,6 +11268,10 @@ class MainWindow(QMainWindow):
         self.table.viewport().update()
         self.update_statusbar()
 
+        # 🔄 Selaraskan ulang checkbox header (select all) dengan kondisi baris terbaru
+        if hasattr(self, "header_checkbox"):
+            QTimer.singleShot(0, self.sync_header_checkbox_state)
+
     def lookup_pemilih(self, rows):
         """Fungsi lookup pemilih — belum diimplementasikan."""
         from PyQt6.QtWidgets import QMessageBox
@@ -10711,7 +11509,7 @@ class MainWindow(QMainWindow):
                         dpid_list.append(dpid)
 
                 if not dpid_list:
-                    show_modern_warning(self, "Tidak Ada Data Valid yang bisa diaktifkan.")
+                    show_modern_warning(self, "Tidak Ada Data", "Tidak ada data yang dapat diresolve.")
                     return
 
                 # =========================================================
@@ -11707,10 +12505,10 @@ class MainWindow(QMainWindow):
 
             # === Urutkan hasil (tetap aman meski kosong) ===
             hasil_data.sort(key=lambda d: (
+                d.get("NIK", ""),
                 d.get("TPS", ""),
                 d.get("RW", ""),
                 d.get("RT", ""),
-                d.get("NKK", ""),
                 d.get("NAMA", "")
             ))
 
@@ -12114,6 +12912,513 @@ class MainWindow(QMainWindow):
         return -1
 
 
+    def sync_sidalih(self):
+        progress_overlay = None
+
+        try:
+            # ============================================================
+            # 1. Tentukan tabel aktif
+            # ============================================================
+            tbl_name = self._active_table()
+
+            if not tbl_name:
+                return
+
+            # ============================================================
+            # 2. Pastikan tabel aktif memang sudah berisi data
+            # ============================================================
+            conn = get_connection()
+            cur = conn.cursor()
+
+            cur.execute(
+                f"SELECT 1 FROM {tbl_name} LIMIT 1"
+            )
+
+            if cur.fetchone() is None:
+                show_modern_warning(
+                    self,
+                    "Sync Sidalih",
+                    "Data pada tabel aktif masih kosong."
+                )
+                self._update_sync_sidalih_button()
+                return
+
+            # ============================================================
+            # 3. Pilih CSV Sidalih
+            # ============================================================
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Pilih File CSV Sidalih",
+                "",
+                "CSV Files (*.csv)"
+            )
+
+            if not file_path:
+                return
+
+            # ============================================================
+            # 4. Baca CSV
+            # ============================================================
+            with open(
+                file_path,
+                newline="",
+                encoding="utf-8"
+            ) as csvfile:
+
+                reader = list(
+                    csv.reader(
+                        csvfile,
+                        delimiter="#"
+                    )
+                )
+
+            if len(reader) < 2:
+                show_modern_warning(
+                    self,
+                    "Sync Sidalih",
+                    "File CSV tidak berisi data."
+                )
+                return
+
+            # ============================================================
+            # 5. Header
+            # ============================================================
+            header = reader[0]
+
+            def normalize_header(value):
+                return re.sub(
+                    r"[^A-Z0-9]",
+                    "",
+                    str(value).upper()
+                )
+
+            normalized_header = {
+                normalize_header(col): idx
+                for idx, col in enumerate(header)
+            }
+
+            # ============================================================
+            # 6. Cari STATUS
+            # ============================================================
+            status_aliases = [
+                "STATUS",
+                "STS",
+                "STATUS DATA",
+                "STATUS_DATA"
+            ]
+
+            idx_status = None
+
+            for alias in status_aliases:
+
+                key = normalize_header(alias)
+
+                if key in normalized_header:
+                    idx_status = normalized_header[key]
+                    break
+
+            if idx_status is None:
+                show_modern_warning(
+                    self,
+                    "Sync Sidalih",
+                    "Kolom STATUS tidak ditemukan di CSV."
+                )
+                return
+
+            # ============================================================
+            # 7. Cari TAHAPAN_ID
+            #
+            # Semua bentuk berikut diterima:
+            #
+            # TAHAPAN_ID
+            # tahapan_id
+            # TAHAPAN_Id
+            # tahapan-id
+            # tahapanid
+            # tahapan id
+            # ============================================================
+            tahapan_aliases = [
+                "TAHAPAN_ID",
+                "TAHAPAN-ID",
+                "TAHAPANID",
+                "TAHAPAN ID"
+            ]
+
+            idx_tahapan = None
+
+            for alias in tahapan_aliases:
+
+                key = normalize_header(alias)
+
+                if key in normalized_header:
+                    idx_tahapan = normalized_header[key]
+                    break
+
+            if idx_tahapan is None:
+                show_modern_warning(
+                    self,
+                    "Sync Sidalih",
+                    "Kolom TAHAPAN_ID tidak ditemukan di CSV."
+                )
+                return
+
+            # ============================================================
+            # 8. Pastikan CSV bukan kosong setelah DELETE dikeluarkan
+            # ============================================================
+            ada_data = False
+
+            for row in reader[1:]:
+
+                if not row:
+                    continue
+
+                status_val = (
+                    row[idx_status].strip().upper()
+                    if idx_status < len(row)
+                    else ""
+                )
+
+                if status_val != "DELETE":
+                    ada_data = True
+                    break
+
+            if not ada_data:
+                show_modern_warning(
+                    self,
+                    "Sync Sidalih",
+                    "Tidak ada data yang dapat disinkronkan."
+                )
+                return
+
+            # ============================================================
+            # 9. Ambil OTP
+            # ============================================================
+            try:
+                cur.execute(
+                    "SELECT otp_secret FROM users LIMIT 1"
+                )
+
+                row_otp = cur.fetchone()
+
+                if not row_otp or not row_otp[0]:
+                    show_modern_error(
+                        self,
+                        "OTP Tidak Ditemukan",
+                        "Kode OTP belum dikonfigurasi di sistem."
+                    )
+                    return
+
+                otp_secret = row_otp[0].strip()
+
+            except Exception as e:
+
+                show_modern_error(
+                    self,
+                    "Error OTP",
+                    f"Gagal memuat secret OTP:\n{e}"
+                )
+                return
+
+            # ============================================================
+            # 10. Dialog OTP
+            # ============================================================
+            overlay = self.buat_overlay(18)
+
+            otp_dialog = QDialog(self)
+            otp_dialog.setWindowTitle("Verifikasi OTP")
+            otp_dialog.setFixedSize(340, 220)
+            otp_dialog.setWindowModality(
+                Qt.WindowModality.ApplicationModal
+            )
+
+            otp_dialog.setStyleSheet("""
+                QDialog {
+                    background-color: #dddddd;
+                    color: black;
+                    border-radius: 10px;
+                }
+
+                QLabel {
+                    color: black;
+                    font-size: 12pt;
+                }
+
+                QLineEdit {
+                    border: 2px solid #555;
+                    border-radius: 6px;
+                    padding: 6px;
+                    font-size: 16pt;
+                    letter-spacing: 4px;
+                    background-color: #666666;
+                    color: #ffffff;
+                    qproperty-alignment: AlignCenter;
+                }
+
+                QPushButton {
+                    background-color: #ff6600;
+                    color: white;
+                    font-weight: bold;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+
+                QPushButton:hover {
+                    background-color: #d71d1d;
+                }
+            """)
+
+            lay_otp = QVBoxLayout(otp_dialog)
+            lay_otp.setSpacing(15)
+            lay_otp.setContentsMargins(
+                25, 25, 25, 25
+            )
+
+            lbl = QLabel(
+                "Masukkan kode OTP dari aplikasi "
+                "Authenticator Anda:"
+            )
+
+            lbl.setWordWrap(True)
+            lbl.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+
+            lay_otp.addWidget(lbl)
+
+            otp_input = QLineEdit()
+            otp_input.setMaxLength(6)
+            otp_input.setPlaceholderText("••••••")
+            otp_input.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+
+            lay_otp.addWidget(otp_input)
+
+            btn_verify = QPushButton("Verifikasi")
+            btn_verify.setCursor(
+                Qt.CursorShape.PointingHandCursor
+            )
+
+            lay_otp.addWidget(btn_verify)
+
+            verifying = {
+                "in_progress": False
+            }
+
+            def do_verify():
+                if verifying["in_progress"]:
+                    return
+
+                verifying["in_progress"] = True
+
+                code = otp_input.text().strip()
+
+                if not code:
+                    show_modern_warning(
+                        otp_dialog,
+                        "Error",
+                        "Kode OTP belum diisi."
+                    )
+
+                    otp_input.setFocus()
+                    verifying["in_progress"] = False
+                    return
+
+                totp = pyotp.TOTP(otp_secret)
+
+                if not totp.verify(code):
+
+                    show_modern_error(
+                        otp_dialog,
+                        "Gagal",
+                        "Kode OTP salah atau sudah "
+                        "kedaluwarsa!"
+                    )
+
+                    otp_input.setFocus()
+                    otp_input.selectAll()
+
+                    verifying["in_progress"] = False
+                    return
+
+                otp_dialog.accept()
+
+            btn_verify.clicked.connect(do_verify)
+            otp_input.returnPressed.connect(do_verify)
+
+            otp_dialog.finished.connect(
+                lambda: self.hapus_overlay(overlay)
+            )
+
+            if otp_dialog.exec() != QDialog.DialogCode.Accepted:
+                show_modern_info(
+                    self,
+                    "Dibatalkan",
+                    "Proses Sync Sidalih dibatalkan "
+                    "oleh pengguna."
+                )
+                return
+
+            # ============================================================
+            # 11. Progress overlay
+            # ============================================================
+            self._sync_sidalih_progress_overlay = QWidget(
+                self
+            )
+
+            self._sync_sidalih_progress_overlay.setGeometry(
+                0,
+                0,
+                self.width(),
+                self.height()
+            )
+
+            self._sync_sidalih_progress_overlay.setStyleSheet(
+                "background-color: rgba(255,255,255,230);"
+            )
+
+            lay_prog = QVBoxLayout(
+                self._sync_sidalih_progress_overlay
+            )
+
+            lay_prog.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+
+            lbl_status = QLabel(
+                "Sinkronisasi data Sidalih..."
+            )
+
+            lbl_status.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
+
+            lbl_status.setStyleSheet(
+                "color: black; "
+                "font-size: 13pt; "
+                "font-weight: 600;"
+            )
+
+            self._sync_sidalih_progress_bar = QProgressBar()
+
+            self._sync_sidalih_progress_bar.setRange(
+                0,
+                100
+            )
+
+            self._sync_sidalih_progress_bar.setFixedWidth(
+                int(self.width() * 0.4)
+            )
+
+            self._sync_sidalih_progress_bar.setStyleSheet("""
+                QProgressBar {
+                    background-color: #e0e0e0;
+                    border: 1px solid #999;
+                    border-radius: 10px;
+                    text-align: center;
+                    height: 24px;
+                    color: black;
+                    font-weight: bold;
+                }
+
+                QProgressBar::chunk {
+                    background-color: #ff6600;
+                    border-radius: 10px;
+                }
+            """)
+
+            lay_prog.addWidget(lbl_status)
+            lay_prog.addSpacing(10)
+            lay_prog.addWidget(
+                self._sync_sidalih_progress_bar
+            )
+
+            self._sync_sidalih_progress_overlay.show()
+
+            # ============================================================
+            # 12. Jalankan Worker
+            # ============================================================
+            self._sync_sidalih_tbl_name = tbl_name
+
+            self._sidalih_worker = SidalihSyncWorker(
+                reader=reader,
+                header=header,
+                idx_status=idx_status,
+                idx_tahapan=idx_tahapan,
+                tbl_name=tbl_name,
+                parent=self
+            )
+
+            self._sidalih_worker.progress.connect(
+                self._sync_sidalih_progress_bar.setValue
+            )
+
+            self._sidalih_worker.finished_ok.connect(
+                self._on_sync_sidalih_sukses
+            )
+
+            self._sidalih_worker.finished_error.connect(
+                self._on_sync_sidalih_gagal
+            )
+
+            self._sidalih_worker.start()
+
+        except Exception as e:
+
+            self._tutup_progress_sync_sidalih()
+
+            show_modern_error(
+                self,
+                "Error",
+                f"Gagal Sync Sidalih:\n{e}"
+            )
+
+    def _tutup_progress_sync_sidalih(self):
+        overlay = getattr(
+            self,
+            "_sync_sidalih_progress_overlay",
+            None
+        )
+
+        if overlay is not None:
+            overlay.hide()
+            overlay.deleteLater()
+
+            self._sync_sidalih_progress_overlay = None
+
+
+    def _on_sync_sidalih_sukses(self, jumlah_baris):
+        self._tutup_progress_sync_sidalih()
+
+        with self.freeze_ui():
+            self.load_data_from_db()
+            self.update_pagination()
+            self.show_page(1)
+            self.connect_header_events()
+            self.sort_data(auto=True)
+
+        self._update_sync_sidalih_button()
+
+        show_modern_info(
+            self,
+            "Sync Sidalih Berhasil",
+            f"Sinkronisasi data {self._sync_sidalih_tbl_name.upper()} "
+            f"selesai.\n\n"
+            f"{jumlah_baris} baris berhasil dimuat."
+        )
+
+
+    def _on_sync_sidalih_gagal(self, pesan_error):
+        self._tutup_progress_sync_sidalih()
+
+        show_modern_error(
+            self,
+            "Sync Sidalih Gagal",
+            f"Gagal Sync Sidalih:\n{pesan_error}"
+        )
+
+        self._update_sync_sidalih_button()
+
     # Import CSV Function (OTP + Progress Bar SIMPATI)
     # =================================================
     def import_csv(self):
@@ -12444,12 +13749,17 @@ class MainWindow(QMainWindow):
 
     def _on_import_csv_sukses(self, jumlah_baris):
         self._tutup_progress_csv()
+
         with self.freeze_ui():
             self.load_data_from_db()
             self.update_pagination()
             self.show_page(1)
             self.connect_header_events()
             self.sort_data(auto=True)
+
+        # Aktifkan Sync Sidalih jika tabel sudah berisi data
+        self._update_sync_sidalih_button()
+
         show_modern_info(
             self, "Sukses",
             f"Import CSV ke tabel {self._csv_tbl_name.upper()} selesai!\n"
@@ -12458,7 +13768,27 @@ class MainWindow(QMainWindow):
 
     def _on_import_csv_gagal(self, pesan_error):
         self._tutup_progress_csv()
-        show_modern_error(self, "Error", f"Gagal import CSV:\n{pesan_error}")        
+        show_modern_error(self, "Error", f"Gagal import CSV:\n{pesan_error}")
+
+    def _update_sync_sidalih_button(self):
+        """Aktifkan Sync Sidalih hanya jika tabel aktif sudah berisi data."""
+        try:
+            from db_manager import get_connection
+
+            tbl = self._active_table()
+
+            conn = get_connection()
+            cur = conn.cursor()
+
+            cur.execute(f"SELECT 1 FROM {tbl} LIMIT 1")
+            ada_data = cur.fetchone() is not None
+
+            self.action_sync_sidalih.setEnabled(ada_data)
+
+        except Exception as e:
+            print(f"[Sync Sidalih] Gagal mengecek data: {e}")
+            if hasattr(self, "action_sync_sidalih"):
+                self.action_sync_sidalih.setEnabled(False)        
 
     def import_baruecoklit(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -13583,7 +14913,18 @@ class MainWindow(QMainWindow):
                 cur = conn.cursor()
                 tbl = self._active_table()
 
+                data_awal_tbl = {
+                    "DPHP": "data_awal_dphp",
+                    "DPSHP": "data_awal_dphsp",
+                    "DPSHPA": "data_awal_dphspa"
+                }.get(self._tahapan.upper())
+
+                if not data_awal_tbl:
+                    raise Exception(f"Tahapan tidak dikenal: {self._tahapan}")
+
                 cur.execute(f"DELETE FROM {tbl}")
+                cur.execute(f"DELETE FROM {data_awal_tbl}")
+
                 conn.commit()
 
                 self.all_data.clear()
@@ -14485,7 +15826,7 @@ class MainWindow(QMainWindow):
             new_window = window_class(self)
 
             # 🟢 Pastikan icon muncul di taskbar
-            icon_path = os.path.join(os.path.dirname(__file__), "KPU.png")
+            icon_path = os.path.join(os.path.dirname(__file__), "iconKPU.ico")
             if os.path.exists(icon_path):
                 new_window.setWindowIcon(QIcon(icon_path))
             new_window.setWindowFlags(
@@ -15137,7 +16478,6 @@ class MainWindow(QMainWindow):
             cur.executescript("""
                 PRAGMA synchronous = OFF;
                 PRAGMA journal_mode = MEMORY;
-                PRAGMA locking_mode = EXCLUSIVE;
                 PRAGMA temp_store = MEMORY;
                 PRAGMA cache_size = 500000;
                 PRAGMA mmap_size = 268435456; -- 256 MB memory map
@@ -15261,7 +16601,6 @@ class MainWindow(QMainWindow):
             cur.executescript("""
                 PRAGMA synchronous = OFF;
                 PRAGMA journal_mode = MEMORY;
-                PRAGMA locking_mode = EXCLUSIVE;
                 PRAGMA temp_store = MEMORY;
                 PRAGMA cache_size = 500000;
                 PRAGMA mmap_size = 268435456; -- 256 MB
@@ -15328,9 +16667,6 @@ class MainWindow(QMainWindow):
             conn = get_connection()
             cur = conn.cursor()
 
-            # ================================================================
-            # 🔹 2️⃣ Aktifkan mode performa maksimum (aman untuk SQLCipher)
-            # ================================================================
             cur.executescript("""
                 PRAGMA cipher_memory_security = OFF;
                 PRAGMA temp_store = MEMORY;
@@ -15339,7 +16675,6 @@ class MainWindow(QMainWindow):
                 PRAGMA page_size = 4096;
                 PRAGMA synchronous = OFF;
                 PRAGMA journal_mode = MEMORY;
-                PRAGMA locking_mode = EXCLUSIVE;
             """)
 
             # ================================================================
@@ -15674,7 +17009,7 @@ class MainWindow(QMainWindow):
 
             cur.execute(f"""
                 SELECT KECAMATAN, DESA, DPID, NKK, NIK, NAMA, TMPT_LHR, TGL_LHR,
-                    STS, JK, ALAMAT, RT, RW, DIS, KTPel, KET, SUMBER, TPS
+                    STS, JK, ALAMAT, RT, RW, DIS, KTPel, KET, SUMBER, TPS, LastUpdate
                 FROM {tbl}
                 WHERE KET <> '0'
                 ORDER BY CAST(TPS AS INTEGER), CAST(RW AS INTEGER), CAST(RT AS INTEGER), NKK, NAMA;
@@ -15692,7 +17027,7 @@ class MainWindow(QMainWindow):
             headers = [
                 "KECAMATAN", "DESA",
                 "DPID", "NKK", "NIK", "NAMA", "TMPLHR", "TGLLHR", "STS", "L/P",
-                "JALAN", "RT", "RW", "DIS", "EKTP", "KET", "SMBR", "TPS"
+                "JALAN", "RT", "RW", "DIS", "EKTP", "KET", "SMBR", "TPS", "LastUpdate"
             ]
             ws.append(headers)
 
@@ -15700,7 +17035,7 @@ class MainWindow(QMainWindow):
             for r in rows:
                 (
                     kec, desa_val, dpid, nkk, nik, nama, tmplhr, tgllhr, sts, jk,
-                    alamat, rt, rw, dis, ktpel, ket, sumber, tps
+                    alamat, rt, rw, dis, ktpel, ket, sumber, tps, last_update
                 ) = r
 
                 def safe(v): return "" if v in (None, "None") else str(v).strip()
@@ -15740,6 +17075,7 @@ class MainWindow(QMainWindow):
                     ket_val,
                     safe(sumber),
                     int(tps) if safe(tps).isdigit() else None,
+                    safe(last_update)
                 ]
                 ws.append(row_excel)
 
@@ -15936,6 +17272,7 @@ class UnggahRegulerWindow(QWidget):
 
         # === Event handler: isi nomor otomatis bila baris penuh
         self.table.itemChanged.connect(self._fill_numbers)
+        self.table.itemChanged.connect(self._update_btn_simpan_state)  # ✅ update status tombol Simpan
         self.layout.addWidget(self.table)
 
         # ==========================================
@@ -15945,9 +17282,9 @@ class UnggahRegulerWindow(QWidget):
         btn_layout.addStretch(1)
 
         # Tombol Simpan
-        btn_simpan = QPushButton("💾 Simpan")
-        btn_simpan.setFixedSize(140, 40)
-        btn_simpan.setStyleSheet("""
+        self.btn_simpan = QPushButton("💾 Simpan")
+        self.btn_simpan.setFixedSize(140, 40)
+        self.btn_simpan.setStyleSheet("""
             QPushButton {
                 background-color:#ff6600;
                 color:white;
@@ -15957,10 +17294,14 @@ class UnggahRegulerWindow(QWidget):
             QPushButton:hover {
                 background-color:#d94f00;
             }
+            QPushButton:disabled {
+                background-color:#cccccc;
+                color:#888888;
+            }
         """)
-        #btn_simpan.clicked.connect(lambda: print("[INFO] Tombol Simpan ditekan (fungsi belum diisi)."))
-        btn_layout.addWidget(btn_simpan)
-        btn_simpan.clicked.connect(self.simpan_data_ke_tabel_aktif)
+        self.btn_simpan.setEnabled(False)  # ✅ nonaktif selama tabel unggah masih kosong
+        btn_layout.addWidget(self.btn_simpan)
+        self.btn_simpan.clicked.connect(self.simpan_data_ke_tabel_aktif)
 
         # Tombol Tutup
         btn_tutup = QPushButton("Tutup")
@@ -16008,6 +17349,40 @@ class UnggahRegulerWindow(QWidget):
             else:
                 no_item.setText("")
 
+    def _update_btn_simpan_state(self):
+        """Aktifkan Simpan hanya jika active_table dan WebGrid sama-sama berisi data."""
+        try:
+            tbl_aktif = self._active_table()
+
+            # Cek active_table
+            if not tbl_aktif:
+                self.btn_simpan.setEnabled(False)
+                return
+
+            conn = get_connection()
+            cur = conn.cursor()
+
+            cur.execute(f"SELECT EXISTS(SELECT 1 FROM {tbl_aktif} LIMIT 1)")
+            active_ada_data = bool(cur.fetchone()[0])
+
+            if not active_ada_data:
+                self.btn_simpan.setEnabled(False)
+                return
+
+            # Cek WebGrid
+            for row in range(self.table.rowCount()):
+                for col in range(1, self.table.columnCount()):
+                    item = self.table.item(row, col)
+
+                    if item and item.text().strip():
+                        self.btn_simpan.setEnabled(True)
+                        return
+
+            self.btn_simpan.setEnabled(False)
+
+        except Exception:
+            self.btn_simpan.setEnabled(False)
+
     def _install_delete_handler(self):
         """Pasang event filter agar tombol Delete bisa menghapus isi sel."""
         self.table.installEventFilter(self)
@@ -16015,6 +17390,7 @@ class UnggahRegulerWindow(QWidget):
     def simpan_data_ke_tabel_aktif(self):
         """Validasi & unggah data dari tabel UnggahReguler ke tabel aktif (super kilat & identik hasil).
         Khusus KET 1..8: SEMUA kolom utama SELALU diisi dari *_ASAL pada tabel aktif (tanpa fallback)."""
+        conn = None
         try:
             tbl_aktif = self._active_table()
             if not tbl_aktif:
@@ -16027,6 +17403,18 @@ class UnggahRegulerWindow(QWidget):
 
             conn = get_connection()
             cur = conn.cursor()
+
+            # Cek active_table harus memiliki data
+            cur.execute(f"SELECT EXISTS(SELECT 1 FROM {tbl_aktif} LIMIT 1)")
+
+            if not cur.fetchone()[0]:
+                QMessageBox.warning(
+                    self,
+                    "Data Tidak Tersedia",
+                    "Data pada tabel aktif masih kosong."
+                )
+                return
+
             cur.executescript("""
                 PRAGMA synchronous = OFF;
                 PRAGMA journal_mode = MEMORY;
@@ -16319,6 +17707,20 @@ class UnggahRegulerWindow(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Gagal menyimpan data:\n{e}")
             import traceback; traceback.print_exc()
+        finally:
+            # ✅ WAJIB: lepas kunci eksklusif, kalau tidak koneksi lain
+            #    (termasuk get_temp_connection() di worker) akan macet
+            #    dengan error "database is locked" untuk sisa sesi ini.
+            if conn is not None:
+                try:
+                    conn.execute("PRAGMA locking_mode = NORMAL;")
+                    # Sentuhan kecil ini WAJIB agar SQLite benar-benar
+                    # menurunkan kunci dari EXCLUSIVE ke NORMAL sekarang juga,
+                    # bukan menunggu transaksi berikutnya.
+                    conn.execute("BEGIN IMMEDIATE;")
+                    conn.commit()
+                except Exception as e:
+                    print(f"[WARN] Gagal reset locking_mode: {e}")
 
     def eventFilter(self, obj, event):
         """Tangani tombol Delete dari mana pun dalam tabel (termasuk editor)."""
@@ -19543,9 +20945,9 @@ class BeritaAcara(QMainWindow):
         toolbar.addAction(btn_save)
 
         # === Tombol Print ===
-        btn_print = QAction("🖨 Cetak", self)
-        btn_print.triggered.connect(self.print_pdf)
-        toolbar.addAction(btn_print)
+        #btn_print = QAction("🖨 Cetak", self)
+        #btn_print.triggered.connect(self.print_pdf)
+        #toolbar.addAction(btn_print)
 
         # Tambahkan toolbar di sisi atas window
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
@@ -20009,8 +21411,35 @@ class BeritaAcara(QMainWindow):
 
             # === Paragraf 1 ===
             pydate = tanggal_qdate.toPyDate()
-            hari = pydate.strftime("%A").capitalize()
-            bulan = pydate.strftime("%B").capitalize()
+
+            HARI_ID = {
+                0: "Senin",
+                1: "Selasa",
+                2: "Rabu",
+                3: "Kamis",
+                4: "Jumat",
+                5: "Sabtu",
+                6: "Minggu",
+            }
+
+            BULAN_ID = {
+                1: "Januari",
+                2: "Februari",
+                3: "Maret",
+                4: "April",
+                5: "Mei",
+                6: "Juni",
+                7: "Juli",
+                8: "Agustus",
+                9: "September",
+                10: "Oktober",
+                11: "November",
+                12: "Desember",
+            }
+
+            hari = HARI_ID[pydate.weekday()]
+            bulan = BULAN_ID[pydate.month]
+
             tanggal_angka = pydate.day
             tahun_angka = pydate.year
             tanggal_terbilang = str(tanggal_angka)
@@ -20094,7 +21523,7 @@ class BeritaAcara(QMainWindow):
             # === Blok lokasi dan tanggal dibuat dalam tabel dua kolom agar titik dua sejajar ===
             data_ttd = [
                 ["Dibuat di", f": {self.desa.title()}"],
-                ["Pada Tanggal", f": {pydate.strftime('%d %B %Y')}"]
+                ["Pada Tanggal", f": {tanggal_angka} {bulan} {tahun_angka}"]
             ]
 
             tbl_ttd = Table(data_ttd, colWidths=[80, 100])  # kolom 1 label, kolom 2 isi
@@ -21516,9 +22945,9 @@ class LampAdpp(QMainWindow):
         toolbar.addAction(btn_save)
 
         # === Tombol Print ===
-        btn_print = QAction("🖨 Cetak", self)
-        btn_print.triggered.connect(self.print_adpp)
-        toolbar.addAction(btn_print)
+        #btn_print = QAction("🖨 Cetak", self)
+        #btn_print.triggered.connect(self.print_adpp)
+        #toolbar.addAction(btn_print)
 
         # Tambahkan toolbar di sisi atas window
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
@@ -23273,9 +24702,9 @@ class LampArpp(QMainWindow):
         toolbar.addAction(btn_save)
 
         # === Tombol Print ===
-        btn_print = QAction("🖨 Cetak", self)
-        btn_print.triggered.connect(self.print_arpp)
-        toolbar.addAction(btn_print)
+        #btn_print = QAction("🖨 Cetak", self)
+        #btn_print.triggered.connect(self.print_arpp)
+        #toolbar.addAction(btn_print)
 
         # Tambahkan toolbar di sisi atas window
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
@@ -23963,9 +25392,10 @@ class LampRekapPps(QMainWindow):
         btn_save.triggered.connect(self.simpan_pdf)
         toolbar.addAction(btn_save)
 
-        btn_print = QAction("🖨 Cetak", self)
-        btn_print.triggered.connect(self.print_pdf)
-        toolbar.addAction(btn_print)
+        #btn_print = QAction("🖨 Cetak", self)
+        #btn_print.triggered.connect(self.print_pdf)
+        #toolbar.addAction(btn_print)
+
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
         # ====================== TOMBOL TUTUP ======================
@@ -24556,9 +25986,10 @@ class LapCoklit(QMainWindow):
         btn_save.triggered.connect(self.simpan_pdf)
         toolbar.addAction(btn_save)
 
-        btn_print = QAction("🖨 Cetak", self)
-        btn_print.triggered.connect(self.print_pdf)
-        toolbar.addAction(btn_print)
+        #btn_print = QAction("🖨 Cetak", self)
+        #btn_print.triggered.connect(self.print_pdf)
+        #toolbar.addAction(btn_print)
+
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
         # ====================== TOMBOL BAWAH ======================
@@ -25579,7 +27010,7 @@ class Data_Pantarlih(QMainWindow):
         # === Pastikan ikon aplikasi selalu muncul di taskbar ===
         try:
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            icon_path = os.path.join(base_dir, "KPU.png")
+            icon_path = os.path.join(base_dir, "iconKPU.ico")
             if os.path.exists(icon_path):
                 self.setWindowIcon(app_icon())
         except Exception:
@@ -25598,7 +27029,6 @@ class Data_Pantarlih(QMainWindow):
             PRAGMA page_size = 4096;
             PRAGMA synchronous = OFF;
             PRAGMA journal_mode = MEMORY;
-            PRAGMA locking_mode = EXCLUSIVE;
         """)
 
         # =====================================================

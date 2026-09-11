@@ -4,7 +4,7 @@ db_manager.py – Pengelola koneksi database terenkripsi SIMPATI
 Versi stabil & aman (anti-lock, auto-reconnect, full schema, OTP-ready)
 """
 
-import os, sys, sqlite3, subprocess, time, functools
+import os, sys, sqlite3, subprocess, time, functools, traceback
 from threading import Lock
 from pathlib import Path
 from PyQt6.QtWidgets import QMessageBox
@@ -27,6 +27,18 @@ KEY_PATH = KEY_DIR / "simpati.key"
 
 SIMPATI_DIR.mkdir(parents=True, exist_ok=True)
 KEY_DIR.mkdir(parents=True, exist_ok=True)
+
+_DB_LOG_PATH = SIMPATI_DIR / "db_error.log"
+
+
+def _log_db_error(msg: str):
+    """Catat error DB ke file log — print() saja tidak kelihatan di EXE PyQt6."""
+    try:
+        with open(_DB_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+    print(msg)
 
 # =========================================================
 # 🛡️ DPAPI WRAPPER (Windows only untuk lindungi file kunci)
@@ -296,9 +308,16 @@ def init_schema(conn):
             print("[INFO] Mengisi tabel 'kecamatan'...")
             from init_db import init_kecamatan
             init_kecamatan()
-            print("[✅] Tabel kecamatan selesai diisi otomatis.")
-    except Exception as e:
-        print(f"[WARN] Gagal isi data kecamatan otomatis: {e}")
+            cur.execute("SELECT COUNT(*) FROM kecamatan")
+            new_count = cur.fetchone()[0]
+            if new_count == 0:
+                _log_db_error("[WARN] init_kecamatan() selesai tanpa exception, "
+                               "tapi tabel 'kecamatan' tetap 0 baris. Cek "
+                               "init_kecamatan_error.log untuk detail.")
+            else:
+                print(f"[✅] Tabel kecamatan selesai diisi otomatis ({new_count} baris).")
+    except Exception:
+        _log_db_error("[ERROR] Gagal isi data kecamatan otomatis:\n" + traceback.format_exc())
 
 
 # =========================================================
@@ -386,6 +405,7 @@ def ensure_connection_alive():
 def with_safe_db(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        conn = None
         for attempt in range(3):
             try:
                 conn = ensure_connection_alive()
@@ -398,10 +418,14 @@ def with_safe_db(func):
                     time.sleep(0.3)
                     continue
                 else:
-                    conn.rollback()
+                    if conn is not None:
+                        conn.rollback()
+                    _log_db_error(f"[with_safe_db] OperationalError di {func.__name__}: {e}")
                     raise
             except Exception as e:
-                conn.rollback()
+                if conn is not None:
+                    conn.rollback()
+                _log_db_error(f"[with_safe_db] Exception di {func.__name__}:\n" + traceback.format_exc())
                 raise
         raise sqlite3.OperationalError("DB locked setelah 3 percobaan.")
     return wrapper
@@ -411,8 +435,10 @@ def with_safe_db(func):
 # =========================================================
 def get_temp_connection():
     """Koneksi sementara independen (tidak memakai global _connection).
-    Digunakan hanya untuk backup/restore agar tidak bentrok dengan koneksi utama.
-    PRAGMA di bawah HARUS selalu sama persis dengan get_connection().
+    Digunakan untuk backup/restore, DAN untuk setiap QThread worker (mis. import
+    CSV) — karena koneksi SQLite/SQLCipher terikat ke thread yang membuatnya,
+    setiap thread butuh koneksinya sendiri lewat fungsi ini.
+    PRAGMA enkripsi di bawah HARUS selalu sama persis dengan get_connection().
     """
     try:
         from sqlcipher3 import dbapi2 as sqlcipher
