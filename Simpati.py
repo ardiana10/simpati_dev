@@ -2582,6 +2582,11 @@ class FilterSidebar(QWidget):
         self.rw._scrollable_popup = True
         self.rw._scrollable_popup_items = 8
 
+        # 🔗 Cascading filter: setiap salah satu dari 9 combo ini diubah,
+        # opsi di 8 combo lainnya ikut disegarkan (lihat _CASCADE_FIELDS).
+        for combo_attr, *_ in self._CASCADE_FIELDS:
+            getattr(self, combo_attr).currentIndexChanged.connect(self._on_cascade_combo_changed)
+
         self._populate_dropdown_options()
 
         grid_layout.addWidget(self.keterangan, 0, 0)
@@ -2596,105 +2601,70 @@ class FilterSidebar(QWidget):
         grid_layout.addWidget(self.rank, 3, 0, 1, 3)
 
     
-    def _populate_dropdown_options(self):
-        """Isi semua dropdown di sidebar filter, termasuk SUMBER & TPS dari DB."""
-        self.keterangan.clear()
-        self.kelamin.clear()
-        self.kawin.clear()
-        self.disabilitas.clear()
-        self.ktp_el.clear()
-        self.rank.clear()
-        self.rt.clear()
-        self.rw.clear()
+    # 🔗 Peta 9 combo yang saling terintegrasi (cascading filter):
+    # (atribut combo, kolom DB, key di get_filters(), label placeholder, peta kode->label)
+    _CASCADE_FIELDS = [
+        ("keterangan", "KET", "keterangan", "Keterangan", {
+            "1": "1 (Meninggal)", "2": "2 (Ganda)", "3": "3 (Di Bawah Umur)",
+            "4": "4 (Pindah Domisili)", "5": "5 (WNA)", "6": "6 (TNI)",
+            "7": "7 (Polri)", "8": "8 (Salah TPS)", "U": "U (Ubah)",
+        }),
+        ("kelamin", "JK", "jk", "Kelamin", None),
+        ("kawin", "STS", "sts", "Kawin", None),
+        ("disabilitas", "DIS", "dis", "Disabilitas", {
+            "0": "0 (Normal)", "1": "1 (Fisik)", "2": "2 (Intelektual)",
+            "3": "3 (Mental)", "4": "4 (Sensorik Wicara)",
+            "5": "5 (Sensorik Rungu)", "6": "6 (Sensorik Netra)",
+        }),
+        ("ktp_el", "KTPel", "ktpel", "KTP-el", None),
+        ("sumber", "SUMBER", "sumber", "Sumber", None),
+        ("tps", "TPS", "tps", "TPS", None),
+        ("rt", "RT", "rt", "RT", None),
+        ("rw", "RW", "rw", "RW", None),
+    ]
 
-        # ============================================
-        # Static lists (tetap)
-        # ============================================
-        self.keterangan.addItems([
-            "Keterangan", "1 (Meninggal)", "2 (Ganda)", "3 (Di Bawah Umur)",
-            "4 (Pindah Domisili)", "5 (WNA)", "6 (TNI)", "7 (Polri)",
-            "8 (Salah TPS)", "U (Ubah)"
-        ])
-        self.kelamin.addItems(["Kelamin", "L", "P"])
-        self.kawin.addItems(["Kawin", "S", "B", "P"])
-        self.disabilitas.addItems([
-            "Disabilitas", "0 (Normal)", "1 (Fisik)", "2 (Intelektual)",
-            "3 (Mental)", "4 (Sensorik Wicara)", "5 (Sensorik Rungu)",
-            "6 (Sensorik Netra)"
-        ])
-        self.ktp_el.addItems(["KTP-el", "B", "S"])
+    def _populate_dropdown_options(self):
+        """Isi 9 dropdown filter secara SALING TERINTEGRASI (cascading):
+        opsi tiap combo hanya menampilkan nilai yang benar-benar ada di
+        tabel aktif, dibatasi oleh pilihan yang sedang aktif di 8 combo
+        lainnya (mis. pilih TPS 2 -> RT/RW hanya tampilkan yang ada di TPS 2).
+        Rank tetap statis karena bukan kolom mentah di database."""
+        self.rank.clear()
         self.rank.addItems(["Rank", "Aktif", "Ubah", "TMS", "Baru"])
 
-        # Ambil MainWindow sekali saja
         main = self._get_main_window()
-
-        # ============================================
-        # 🔹 SUMBER
-        # ============================================
-        self.sumber.clear()
         try:
-            if main and hasattr(main, "get_distinct_sumber"):
-                sumber_list = main.get_distinct_sumber()
-                if sumber_list and len(sumber_list) > 1:
-                    self.sumber.addItems(sumber_list)
-                else:
-                    self.sumber.addItem("Sumber")
-            else:
-                self.sumber.addItem("Sumber")
-        except Exception as e:
-            print(f"[FilterSidebar] Gagal ambil Sumber Data: {e}")
-            self.sumber.addItem("Sumber")
+            filters = self.get_filters()
+        except Exception:
+            filters = {}
 
-        # ============================================
-        # 🔹 TPS
-        # ============================================
-        self.tps.clear()
-        try:
-            if main and hasattr(main, "get_distinct_tps"):
-                tps_list = main.get_distinct_tps()
-                if tps_list and len(tps_list) > 1:
-                    self.tps.addItems(tps_list)
-                else:
-                    self.tps.addItem("TPS")
-            else:
-                self.tps.addItem("TPS")
-        except Exception as e:
-            print(f"[FilterSidebar] Gagal ambil TPS: {e}")
-            self.tps.addItem("TPS")
+        for combo_attr, db_col, filter_key, placeholder, label_map in self._CASCADE_FIELDS:
+            combo = getattr(self, combo_attr)
+            current_value = combo.currentText()
 
-        # ============================================
-        # 🔹 RT
-        # ============================================
-        self.rt.clear()
-        try:
-            if main and hasattr(main, "get_distinct_rt"):
-                rt_list = main.get_distinct_rt()
-                if rt_list and len(rt_list) > 1:
-                    self.rt.addItems(rt_list)
-                else:
-                    self.rt.addItem("RT")
-            else:
-                self.rt.addItem("RT")
-        except Exception as e:
-            print(f"[FilterSidebar] Gagal ambil RT: {e}")
-            self.rt.addItem("RT")
+            values = []
+            try:
+                if main and hasattr(main, "get_distinct_filtered"):
+                    values = main.get_distinct_filtered(db_col, filters, filter_key)
+            except Exception as e:
+                print(f"[FilterSidebar] Gagal ambil opsi {combo_attr}: {e}")
 
-        # ============================================
-        # 🔹 RW
-        # ============================================
-        self.rw.clear()
-        try:
-            if main and hasattr(main, "get_distinct_rw"):
-                rw_list = main.get_distinct_rw()
-                if rw_list and len(rw_list) > 1:
-                    self.rw.addItems(rw_list)
-                else:
-                    self.rw.addItem("RW")
-            else:
-                self.rw.addItem("RW")
-        except Exception as e:
-            print(f"[FilterSidebar] Gagal ambil RW: {e}")
-            self.rw.addItem("RW")
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(placeholder)
+            for v in values:
+                combo.addItem(label_map.get(v, v) if label_map else v)
+
+            # Pertahankan pilihan user sebelumnya kalau masih valid,
+            # kalau tidak (mis. jadi kosong akibat filter lain) -> placeholder.
+            idx = combo.findText(current_value)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _on_cascade_combo_changed(self, _index=None):
+        """Dipanggil tiap salah satu dari 9 combo filter diubah user —
+        segarkan opsi ke-8 combo lainnya agar saling terintegrasi."""
+        self._populate_dropdown_options()
 
     def _populate_sumber_from_mainwindow(self):
         """Mengisi dropdown SUMBER di FilterSidebar hanya dari get_distinct_sumber()."""
@@ -2887,7 +2857,11 @@ class FilterSidebar(QWidget):
             self.ktp_el, self.sumber, self.tps, self.rt, self.rw, self.rank
         ]
         for dropdown in dropdown_fields:
+            # blockSignals: cegah 9x pemicu cascading refresh berantai di sini —
+            # reset_filters() sudah memanggil _populate_dropdown_options() sendiri.
+            dropdown.blockSignals(True)
             dropdown.setCurrentIndex(0)
+            dropdown.blockSignals(False)
         
         checkboxes = [
             self.cb_ganda, self.cb_invalid_tgl, 
@@ -16542,7 +16516,60 @@ class MainWindow(QMainWindow):
                 except:
                     pass
 
-        return rw_list    
+        return rw_list
+
+    # 🔗 Kolom DB untuk tiap key filter yang dipakai fitur cascading.
+    _CASCADE_COLUMN_MAP = {
+        "keterangan": "KET", "jk": "JK", "sts": "STS", "dis": "DIS",
+        "ktpel": "KTPel", "sumber": "SUMBER", "tps": "TPS",
+        "rt": "RT", "rw": "RW",
+    }
+
+    def get_distinct_filtered(self, column, filters, exclude_key):
+        """Ambil nilai DISTINCT kolom `column` dari tabel aktif, dibatasi
+        oleh SEMUA filter lain di `filters` (kecuali `exclude_key`, yaitu
+        kolom yang sedang dihitung ulang opsinya sendiri)."""
+        from db_manager import get_connection
+        values = []
+        try:
+            conn = get_connection()
+            if conn is None:
+                return values
+            cur = conn.cursor()
+            tbl = self._active_table()
+
+            conditions, params = [], []
+            for key, col in self._CASCADE_COLUMN_MAP.items():
+                if key == exclude_key:
+                    continue
+                val = filters.get(key)
+                if val:
+                    conditions.append(f"{col} = ?")
+                    params.append(val)
+
+            where_sql = " AND ".join(conditions)
+            if where_sql:
+                where_sql = "WHERE " + where_sql + " AND "
+            else:
+                where_sql = "WHERE "
+
+            query = (
+                f"SELECT DISTINCT {column} FROM {tbl} "
+                f"{where_sql}{column} IS NOT NULL "
+                f"AND TRIM(CAST({column} AS TEXT)) != ''"
+            )
+            cur.execute(query, params)
+            values = [str(r[0]) for r in cur.fetchall() if r[0] is not None]
+
+            try:
+                values.sort(key=lambda x: int(x))
+            except ValueError:
+                values.sort()
+
+        except Exception as e:
+            print(f"[MainWindow.get_distinct_filtered:{column}] Error: {e}")
+
+        return values
 
     def create_filter_sidebar(self):
         """Compatibility wrapper — gunakan toggle_filter_sidebar() sebagai satu-satunya implementasi."""
