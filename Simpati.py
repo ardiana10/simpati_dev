@@ -2587,6 +2587,10 @@ class FilterSidebar(QWidget):
         for combo_attr, *_ in self._CASCADE_FIELDS:
             getattr(self, combo_attr).currentIndexChanged.connect(self._on_cascade_combo_changed)
 
+        # 🔗 Rank ikut memicu & ikut disegarkan dalam siklus cascading yang sama,
+        # walau opsinya diturunkan (bukan kolom mentah) — lihat _populate_dropdown_options().
+        self.rank.currentIndexChanged.connect(self._on_cascade_combo_changed)
+
         self._populate_dropdown_options()
 
         grid_layout.addWidget(self.keterangan, 0, 0)
@@ -2624,19 +2628,47 @@ class FilterSidebar(QWidget):
     ]
 
     def _populate_dropdown_options(self):
-        """Isi 9 dropdown filter secara SALING TERINTEGRASI (cascading):
-        opsi tiap combo hanya menampilkan nilai yang benar-benar ada di
-        tabel aktif, dibatasi oleh pilihan yang sedang aktif di 8 combo
-        lainnya (mis. pilih TPS 2 -> RT/RW hanya tampilkan yang ada di TPS 2).
-        Rank tetap statis karena bukan kolom mentah di database."""
-        self.rank.clear()
-        self.rank.addItems(["Rank", "Aktif", "Ubah", "TMS", "Baru"])
+        """Isi 10 dropdown filter (9 kolom mentah + Rank) secara SALING
+        TERINTEGRASI (cascading): opsi tiap combo hanya menampilkan nilai
+        yang benar-benar ada di tabel aktif, dibatasi oleh pilihan yang
+        sedang aktif di combo lainnya (mis. pilih TPS 2 -> RT/RW hanya
+        tampilkan yang ada di TPS 2).
 
+        Rank BUKAN kolom mentah (diturunkan dari KET, dan dari DPID saat KET
+        kosong — lihat MainWindow.get_distinct_rank/_rank_sql_condition),
+        tapi tetap diperlakukan sebagai anggota cascading:
+          - opsi Rank sendiri dipersempit oleh 9 filter lain yang aktif;
+          - saat Rank dipilih, opsi 9 combo lain ikut dipersempit olehnya
+            (lihat MainWindow.get_distinct_filtered).
+
+        PENTING: filters diambil SEBELUM combo manapun (termasuk Rank)
+        dibersihkan, supaya nilai pilihan user saat ini benar-benar terekam
+        dan bisa dipakai untuk membatasi opsi combo lainnya.
+        """
         main = self._get_main_window()
         try:
             filters = self.get_filters()
         except Exception:
             filters = {}
+
+        # --- Rank: opsi diturunkan dari data (KET/DPID), bukan daftar statis ---
+        current_rank = self.rank.currentText()
+        rank_options = ["Rank"]
+        try:
+            if main and hasattr(main, "get_distinct_rank"):
+                rank_options += main.get_distinct_rank(filters)
+            else:
+                rank_options += ["Aktif", "Ubah", "TMS", "Baru"]
+        except Exception as e:
+            print(f"[FilterSidebar] Gagal ambil opsi rank: {e}")
+            rank_options += ["Aktif", "Ubah", "TMS", "Baru"]
+
+        self.rank.blockSignals(True)
+        self.rank.clear()
+        self.rank.addItems(rank_options)
+        idx = self.rank.findText(current_rank)
+        self.rank.setCurrentIndex(idx if idx >= 0 else 0)
+        self.rank.blockSignals(False)
 
         for combo_attr, db_col, filter_key, placeholder, label_map in self._CASCADE_FIELDS:
             combo = getattr(self, combo_attr)
@@ -16525,10 +16557,82 @@ class MainWindow(QMainWindow):
         "rt": "RT", "rw": "RW",
     }
 
+    def _rank_sql_condition(self, rank_text):
+        """Terjemahkan nilai filter Rank (Aktif/Ubah/TMS/Baru) menjadi kondisi
+        SQL atas kolom KET (+DPID untuk KET kosong). Rank bukan kolom mentah,
+        jadi tidak bisa dibandingkan `KET = ?` langsung — kondisi di sini WAJIB
+        tetap konsisten dengan derivasi rank di matches_filters() (baris
+        "# Rank (Aktif / Ubah / Baru / TMS)")."""
+        req = (rank_text or "").strip().upper()
+        if req == "AKTIF":
+            return ("(UPPER(TRIM(COALESCE(KET,''))) = '0' "
+                    "OR (TRIM(COALESCE(KET,'')) = '' AND TRIM(COALESCE(DPID,'')) NOT IN ('', '0')))")
+        if req == "UBAH":
+            return "UPPER(TRIM(COALESCE(KET,''))) = 'U'"
+        if req == "BARU":
+            return ("(UPPER(TRIM(COALESCE(KET,''))) = 'B' "
+                    "OR (TRIM(COALESCE(KET,'')) = '' AND TRIM(COALESCE(DPID,'')) IN ('', '0')))")
+        if req == "TMS":
+            return "UPPER(TRIM(COALESCE(KET,''))) IN ('1','2','3','4','5','6','7','8')"
+        return ""
+
+    def get_distinct_rank(self, filters):
+        """Hitung kategori Rank (Aktif/Ubah/TMS/Baru) yang BENAR-BENAR muncul
+        di tabel aktif, dibatasi oleh 9 filter lain yang sedang aktif
+        (cascading). Rank diturunkan dari KET (dan DPID saat KET kosong),
+        persis logika yang dipakai matches_filters(), supaya opsi dropdown
+        Rank selalu konsisten dengan hasil filter data yang sebenarnya."""
+        from db_manager import get_connection
+        order = ["Aktif", "Ubah", "TMS", "Baru"]
+        found = set()
+        try:
+            conn = get_connection()
+            if conn is None:
+                return order
+            cur = conn.cursor()
+            tbl = self._active_table()
+
+            conditions, params = [], []
+            for key, col in self._CASCADE_COLUMN_MAP.items():
+                val = filters.get(key)
+                if val:
+                    conditions.append(f"{col} = ?")
+                    params.append(val)
+
+            where_sql = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+            query = f"""
+                SELECT DISTINCT
+                    CASE
+                        WHEN UPPER(TRIM(COALESCE(KET,''))) = '0' THEN 'AKTIF'
+                        WHEN TRIM(COALESCE(KET,'')) = '' AND TRIM(COALESCE(DPID,'')) NOT IN ('', '0') THEN 'AKTIF'
+                        WHEN UPPER(TRIM(COALESCE(KET,''))) = 'U' THEN 'UBAH'
+                        WHEN UPPER(TRIM(COALESCE(KET,''))) = 'B' THEN 'BARU'
+                        WHEN TRIM(COALESCE(KET,'')) = '' AND TRIM(COALESCE(DPID,'')) IN ('', '0') THEN 'BARU'
+                        WHEN UPPER(TRIM(COALESCE(KET,''))) IN ('1','2','3','4','5','6','7','8') THEN 'TMS'
+                        ELSE NULL
+                    END AS rank_kat
+                FROM {tbl}
+                {where_sql}
+            """
+            cur.execute(query, params)
+            label_map = {"AKTIF": "Aktif", "UBAH": "Ubah", "BARU": "Baru", "TMS": "TMS"}
+            for row in cur.fetchall():
+                kat = row[0]
+                if kat and kat in label_map:
+                    found.add(label_map[kat])
+
+        except Exception as e:
+            print(f"[MainWindow.get_distinct_rank] Error: {e}")
+            return order
+
+        return [r for r in order if r in found]
+
     def get_distinct_filtered(self, column, filters, exclude_key):
         """Ambil nilai DISTINCT kolom `column` dari tabel aktif, dibatasi
         oleh SEMUA filter lain di `filters` (kecuali `exclude_key`, yaitu
-        kolom yang sedang dihitung ulang opsinya sendiri)."""
+        kolom yang sedang dihitung ulang opsinya sendiri). Filter Rank ikut
+        diterapkan di sini walau bukan kolom mentah (lihat _rank_sql_condition)."""
         from db_manager import get_connection
         values = []
         try:
@@ -16546,6 +16650,13 @@ class MainWindow(QMainWindow):
                 if val:
                     conditions.append(f"{col} = ?")
                     params.append(val)
+
+            # 🔗 Rank (turunan, bukan kolom mentah) ikut membatasi opsi combo lain
+            rank_val = filters.get("rank")
+            if rank_val and exclude_key != "rank":
+                rank_sql = self._rank_sql_condition(rank_val)
+                if rank_sql:
+                    conditions.append(rank_sql)
 
             where_sql = " AND ".join(conditions)
             if where_sql:
