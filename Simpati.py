@@ -86,7 +86,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QScrollArea, QFormLayout, QGridLayout, QProgressBar, QProgressDialog,
     QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, QPushButton, QComboBox, QGraphicsBlurEffect,
     QCheckBox, QRadioButton, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QDialogButtonBox,
-    QGraphicsSimpleTextItem, QSizePolicy, QStyleOptionButton, QDateEdit, QTextEdit, QStyleFactory
+    QGraphicsSimpleTextItem, QSizePolicy, QStyleOptionButton, QDateEdit, QTextEdit, QStyleFactory, QListWidget, QListWidgetItem
 )
 
 from PyQt6.QtPdf import QPdfDocument
@@ -977,90 +977,168 @@ class CustomCheckBox(QCheckBox):
 class CustomComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # self.theme = "dark" <- Dihapus
         self.setStyleSheet(
             "QComboBox { padding-right: 22px; }"
             "QComboBox::down-arrow { image: none; }"
             "QComboBox::drop-down { width: 0px; border: none; }"
         )
         self._max_popup_width = 500
-        # Force always downward popup as requested
         self._popup_direction_mode = 'down'
-        # Track popup open state to flip chevron
         self._popup_open = False
-        # Animated arrow (rotation angle 0..180)
         self._arrow_angle = 0.0
         self._arrow_anim: QVariantAnimation | None = None
+        self._scrollable_popup = False
+        self._scrollable_popup_items = 8
+
+        # Popup KUSTOM. Popup bawaan QComboBox tidak bisa dipaksa
+        # membatasi tingginya sendiri kalau jumlah item banyak (frame
+        # popup-nya tetap dihitung berdasarkan SEMUA item oleh Qt,
+        # bukan cuma yang kelihatan) — makanya dibuat sendiri di sini
+        # pakai QListWidget biasa yang scroll-nya normal & terkontrol.
+        self._popup_frame = None
+        self._popup_list = None
 
     def setPopupDirection(self, mode: str):
         if mode in ("down", "up", "auto"):
             self._popup_direction_mode = mode
 
-    def showPopup(self):  # type: ignore
-        view = self.view()
-        if view is None:
-            super().showPopup()
-            self._popup_open = True
-            self._animate_arrow(True)
-            self.update()
+    def setScrollablePopup(self, enabled=True, max_items=8):
+        self._scrollable_popup = enabled
+        self._scrollable_popup_items = max_items
+
+    def _ensure_popup_widgets(self):
+        if self._popup_frame is not None:
             return
+        self._popup_frame = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._popup_frame.setObjectName("comboPopupFrame")
+        self._popup_frame.setStyleSheet("""
+            QFrame#comboPopupFrame {
+                background: #ffffff;
+                border: 1px solid #bbb;
+                border-radius: 6px;
+            }
+        """)
+        outer = QVBoxLayout(self._popup_frame)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(0)
+
+        self._popup_list = QListWidget(self._popup_frame)
+        self._popup_list.setFrameShape(QFrame.Shape.NoFrame)
+        self._popup_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._popup_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._popup_list.setUniformItemSizes(True)
+        self._popup_list.setStyleSheet("""
+            QListWidget { border: none; outline: 0; }
+            QListWidget::item { padding: 6px 10px; border-radius: 5px; margin: 1px 2px; }
+            QListWidget::item:hover { background: #ff9800; color: #ffffff; }
+            QListWidget::item:selected { background: #ff9800; color: #ffffff; }
+            QScrollBar:vertical {
+                background: #f3f4f6; width: 7px; margin: 3px 2px 3px 0px; border-radius: 3px;
+            }
+            QScrollBar::handle:vertical { background: #b9bec7; min-height: 28px; border-radius: 3px; }
+            QScrollBar::handle:vertical:hover { background: #ff8800; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; border: none; background: transparent; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        outer.addWidget(self._popup_list)
+        self._popup_list.itemClicked.connect(self._on_popup_item_clicked)
+
+    def _on_popup_item_clicked(self, item):
+        if not (item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            return  # abaikan klik pada item yang sedang di-grayscale
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is not None:
+            self.setCurrentIndex(int(idx))
+        self.hidePopup()
+
+    def showPopup(self):  # type: ignore
+        self._ensure_popup_widgets()
+
+        self._popup_list.clear()
+        model = self.model()
+        for i in range(self.count()):
+            item = QListWidgetItem(self.itemText(i))
+            item.setData(Qt.ItemDataRole.UserRole, i)
+
+            model_item = model.item(i) if hasattr(model, "item") else None
+            enabled = model_item.isEnabled() if model_item is not None else True
+            if not enabled:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+                item.setForeground(QColor("#B0B0B0"))
+
+            self._popup_list.addItem(item)
+
         try:
-            fm = view.fontMetrics()
+            fm = self._popup_list.fontMetrics()
             max_text_width = max((fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
             padding = 56
             popup_width = max(self.width(), min(max_text_width + padding, self._max_popup_width))
         except Exception:
             popup_width = self.width()
-        super().showPopup()
+
+        # Tinggi popup: MAKSIMAL 8 item kelihatan, sisanya di-scroll.
+        # Karena ini QListWidget biasa, scroll-nya sudah otomatis benar
+        # tanpa perlu "membujuk" ukuran container seperti sebelumnya.
+        max_visible = 8
+        row_height = self._popup_list.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = 34
+        visible_count = min(self.count(), max_visible) if self.count() > 0 else 1
+        popup_height = row_height * visible_count + 10
+
+        self._popup_frame.setFixedWidth(int(popup_width))
+        self._popup_frame.setFixedHeight(int(popup_height) + 8)
+        self._popup_list.setFixedHeight(int(popup_height))
+
+        cur = self.currentIndex()
+        if 0 <= cur < self._popup_list.count():
+            self._popup_list.setCurrentRow(cur)
+
+        # Posisi popup mengikuti posisi combobox di layar
+        below_point = self.mapToGlobal(self.rect().bottomLeft())
+        above_point = self.mapToGlobal(self.rect().topLeft())
+        screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
+        target_point = below_point
+        bottom_margin = 2  # jarak aman dari tepi bawah (status bar "SIMPATI v1.1")
+
+        if screen is not None:
+            avail = screen.availableGeometry()
+            total_h = self._popup_frame.height()
+            space_below = avail.bottom() - bottom_margin - below_point.y()
+            space_above = above_point.y() - avail.top()
+            move_up = False
+            if self._popup_direction_mode == 'up':
+                move_up = space_above >= total_h
+            elif self._popup_direction_mode == 'auto':
+                move_up = space_below < total_h and space_above > space_below
+
+            if move_up:
+                target_point = QPoint(above_point.x(), above_point.y() - total_h)
+
+            # Kalau masih kepotong di bawah, geser naik secukupnya saja
+            # (bukan lompat total ke atas combobox seperti mode 'up'/'auto').
+            max_y = avail.bottom() - bottom_margin - total_h
+            if target_point.y() > max_y:
+                target_point = QPoint(target_point.x(), max(max_y, avail.top()))
+
+            x = min(target_point.x(), avail.right() - self._popup_frame.width())
+            x = max(x, avail.left())
+            target_point = QPoint(x, target_point.y())
+
+        self._popup_frame.move(target_point)
+        self._popup_frame.show()
+        self._popup_frame.raise_()
+
         self._popup_open = True
         self._animate_arrow(True)
         self.update()
-        try:
-            try:
-                view.setTextElideMode(Qt.TextElideMode.ElideNone)  # type: ignore
-            except Exception:
-                pass
-            view.setMinimumWidth(int(popup_width))
-            view.setMaximumWidth(int(max(popup_width, self.width())))
-        except Exception:
-            pass
-        if self._popup_direction_mode != 'down':
-            try:
-                combo_rect = self.rect()
-                below_point = self.mapToGlobal(combo_rect.bottomLeft())
-                above_point = self.mapToGlobal(combo_rect.topLeft())
-                screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
-                if not screen:
-                    return
-                avail = screen.availableGeometry()
-                row_height = view.sizeHintForRow(0) if self.count() > 0 else 18
-                visible_items = min(self.count(), self.maxVisibleItems()) if self.maxVisibleItems() > 0 else min(self.count(), 12)
-                popup_height = (row_height * visible_items) + 8
-                space_below = avail.bottom() - below_point.y()
-                space_above = above_point.y() - avail.top()
-                move_up = False
-                if self._popup_direction_mode == 'up':
-                    move_up = space_above >= popup_height
-                elif self._popup_direction_mode == 'auto':
-                    if space_below < popup_height and space_above > space_below:
-                        move_up = True
-                if move_up:
-                    geo = view.geometry()
-                    new_top = above_point.y() - geo.height()
-                    if new_top < avail.top():
-                        new_top = avail.top()
-                    geo.moveTop(new_top)
-                    view.setGeometry(geo)
-            except Exception:
-                pass
 
     def hidePopup(self):  # type: ignore
-        try:
-            super().hidePopup()
-        finally:
-            self._popup_open = False
-            self._animate_arrow(False)
-            self.update()
+        if self._popup_frame is not None:
+            self._popup_frame.hide()
+        self._popup_open = False
+        self._animate_arrow(False)
+        self.update()
 
     def _animate_arrow(self, opening: bool):
         start = self._arrow_angle
@@ -1082,23 +1160,19 @@ class CustomComboBox(QComboBox):
         except Exception:
             pass
 
-    # def setTheme(self, theme): <- Metode ini dihapus
-    #     self.theme = theme
-    #     self.update()
-
     def wheelEvent(self, event):
-        if not self.view().isVisible():
+        if not self._popup_open:
             event.ignore()
             return
-        super().wheelEvent(event)
+        event.ignore()
 
     def keyPressEvent(self, event):
-        if not self.view().isVisible():
+        if not self._popup_open:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Down):
                 self.showPopup()
             event.ignore()
             return
-        super().keyPressEvent(event)
+        event.ignore()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -1108,8 +1182,7 @@ class CustomComboBox(QComboBox):
         arrow_size = 5
         center_x = rect.width() - 14
         center_y = rect.height() // 2
-        
-        # Warna panah HANYA Light Theme
+
         color = "#333"
         pen = QPen(QColor(color), 1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -1117,7 +1190,6 @@ class CustomComboBox(QComboBox):
         painter.save()
         painter.translate(center_x, center_y)
         painter.rotate(self._arrow_angle)
-        # Base 'V' pointing down at 0 degrees
         half = arrow_size
         painter.drawLine(int(-half), int(-half/2), 0, int(half/2))
         painter.drawLine(0, int(half/2), int(half), int(-half/2))
@@ -1868,7 +1940,7 @@ class FilterSidebar(QWidget):
         grid_layout.setVerticalSpacing(gap)
         
         self._setup_dropdown_grid(grid_layout)
-        main_layout.addSpacing(section_gap)
+        main_layout.addSpacing(2)
         main_layout.addLayout(grid_layout)
         
         # === Checkbox Options ===
@@ -1879,7 +1951,7 @@ class FilterSidebar(QWidget):
         checkbox_layout.setVerticalSpacing(gap)
         
         self._setup_checkboxes(checkbox_layout)
-        main_layout.addSpacing(section_gap)
+        main_layout.addSpacing(2)
         main_layout.addLayout(checkbox_layout)
         
         # === Radio Button Options ===
@@ -2496,10 +2568,22 @@ class FilterSidebar(QWidget):
         self.ktp_el = CustomComboBox()
         self.sumber = CustomComboBox()
         self.tps = CustomComboBox()
+        self.rt = CustomComboBox()
+        self.rw = CustomComboBox()
         self.rank = CustomComboBox()
-        
+
+        # Popup scrollable hanya untuk Sumber, RT dan RW
+        self.sumber._scrollable_popup = True
+        self.sumber._scrollable_popup_items = 8
+
+        self.rt._scrollable_popup = True
+        self.rt._scrollable_popup_items = 8
+
+        self.rw._scrollable_popup = True
+        self.rw._scrollable_popup_items = 8
+
         self._populate_dropdown_options()
-        
+
         grid_layout.addWidget(self.keterangan, 0, 0)
         grid_layout.addWidget(self.kelamin, 0, 1)
         grid_layout.addWidget(self.kawin, 0, 2)
@@ -2507,7 +2591,9 @@ class FilterSidebar(QWidget):
         grid_layout.addWidget(self.ktp_el, 1, 1)
         grid_layout.addWidget(self.sumber, 1, 2)
         grid_layout.addWidget(self.tps, 2, 0, 1, 1)
-        grid_layout.addWidget(self.rank, 2, 2)
+        grid_layout.addWidget(self.rt, 2, 1)
+        grid_layout.addWidget(self.rw, 2, 2)
+        grid_layout.addWidget(self.rank, 3, 0, 1, 3)
 
     
     def _populate_dropdown_options(self):
@@ -2518,7 +2604,9 @@ class FilterSidebar(QWidget):
         self.disabilitas.clear()
         self.ktp_el.clear()
         self.rank.clear()
-        
+        self.rt.clear()
+        self.rw.clear()
+
         # ============================================
         # Static lists (tetap)
         # ============================================
@@ -2573,6 +2661,40 @@ class FilterSidebar(QWidget):
         except Exception as e:
             print(f"[FilterSidebar] Gagal ambil TPS: {e}")
             self.tps.addItem("TPS")
+
+        # ============================================
+        # 🔹 RT
+        # ============================================
+        self.rt.clear()
+        try:
+            if main and hasattr(main, "get_distinct_rt"):
+                rt_list = main.get_distinct_rt()
+                if rt_list and len(rt_list) > 1:
+                    self.rt.addItems(rt_list)
+                else:
+                    self.rt.addItem("RT")
+            else:
+                self.rt.addItem("RT")
+        except Exception as e:
+            print(f"[FilterSidebar] Gagal ambil RT: {e}")
+            self.rt.addItem("RT")
+
+        # ============================================
+        # 🔹 RW
+        # ============================================
+        self.rw.clear()
+        try:
+            if main and hasattr(main, "get_distinct_rw"):
+                rw_list = main.get_distinct_rw()
+                if rw_list and len(rw_list) > 1:
+                    self.rw.addItems(rw_list)
+                else:
+                    self.rw.addItem("RW")
+            else:
+                self.rw.addItem("RW")
+        except Exception as e:
+            print(f"[FilterSidebar] Gagal ambil RW: {e}")
+            self.rw.addItem("RW")
 
     def _populate_sumber_from_mainwindow(self):
         """Mengisi dropdown SUMBER di FilterSidebar hanya dari get_distinct_sumber()."""
@@ -2632,43 +2754,43 @@ class FilterSidebar(QWidget):
     def _setup_action_buttons(self, layout):
         """Setup tombol aksi Filter dan Reset dengan gaya khas SIMPATI."""
         # === Tombol Reset ===
-        self.btn_reset = QPushButton("Reset")
-        self.btn_reset.setObjectName("resetBtn")
-        self.btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_reset.clicked.connect(self.reset_filters)
+        #self.btn_reset = QPushButton("Reset")
+        #self.btn_reset.setObjectName("resetBtn")
+        #self.btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        #self.btn_reset.clicked.connect(self.reset_filters)
 
         # === Tombol Filter ===
-        self.btn_filter = QPushButton("Filter")
+        self.btn_filter = QPushButton("Filter Data")
         self.btn_filter.setObjectName("filterBtn")
         self.btn_filter.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_filter.clicked.connect(self._apply_filters)
 
         # === Tambahkan ke layout ===
         layout.addStretch()
-        layout.addWidget(self.btn_reset)
+        #layout.addWidget(self.btn_reset)
         layout.addWidget(self.btn_filter)
         layout.addStretch()
 
         # === Gaya khas SIMPATI ===
-        self.btn_reset.setStyleSheet("""
-            QPushButton#resetBtn {
-                background-color: #d71d1d;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-family: 'Segoe UI';
-                font-size: 8pt;
-                font-weight: 600;
-                letter-spacing: 0.3px;
-            }
-            QPushButton#resetBtn:hover {
-                background-color: #b01515;    /* lebih gelap saat hover */
-            }
-            QPushButton#resetBtn:pressed {
-                background-color: #8c1010;    /* warna tekan */
-            }
-        """)
+        #self.btn_reset.setStyleSheet("""
+        #    QPushButton#resetBtn {
+        #        background-color: #d71d1d;
+        #        color: white;
+        #        border: none;
+        #        border-radius: 6px;
+        #        padding: 6px 16px;
+        #        font-family: 'Segoe UI';
+        #        font-size: 8pt;
+        #        font-weight: 600;
+        #        letter-spacing: 0.3px;
+        #    }
+        #   QPushButton#resetBtn:hover {
+        #        background-color: #b01515;    /* lebih gelap saat hover */
+        #    }
+        #    QPushButton#resetBtn:pressed {
+        #        background-color: #8c1010;    /* warna tekan */
+        #    }
+        #""")
 
         self.btn_filter.setStyleSheet("""
             QPushButton#filterBtn {
@@ -2697,7 +2819,7 @@ class FilterSidebar(QWidget):
         input_widgets = [
             self.tgl_update, self.nama, self.nik, self.nkk, self.tgl_lahir, 
             self.alamat, self.keterangan, self.kelamin, self.kawin, 
-            self.disabilitas, self.ktp_el, self.sumber, self.tps, self.rank
+            self.disabilitas, self.ktp_el, self.sumber, self.tps, self.rt, self.rw, self.rank
         ]
         for widget in input_widgets:
             widget.setFixedHeight(desired_height)
@@ -2719,7 +2841,7 @@ class FilterSidebar(QWidget):
         
         grid_fields = [
             self.keterangan, self.kelamin, self.kawin, 
-            self.disabilitas, self.ktp_el, self.sumber, self.tps, self.rank
+            self.disabilitas, self.ktp_el, self.sumber, self.tps, self.rt, self.rw, self.rank
         ]
         for field in grid_fields:
             field.setFixedWidth(column_width)
@@ -2762,7 +2884,7 @@ class FilterSidebar(QWidget):
         
         dropdown_fields = [
             self.keterangan, self.kelamin, self.kawin, self.disabilitas, 
-            self.ktp_el, self.sumber, self.tps, self.rank
+            self.ktp_el, self.sumber, self.tps, self.rt, self.rw, self.rank
         ]
         for dropdown in dropdown_fields:
             dropdown.setCurrentIndex(0)
@@ -2832,6 +2954,8 @@ class FilterSidebar(QWidget):
             "ktpel": self.ktp_el.currentText() if self.ktp_el.currentText() != "KTP-el" else "",
             "sumber": self.sumber.currentText() if self.sumber.currentText() != "Sumber" else "",
             "tps": self.tps.currentText() if self.tps.currentText() != "TPS" else "",
+            "rt": self.rt.currentText() if self.rt.currentText() != "RT" else "",
+            "rw": self.rw.currentText() if self.rw.currentText() != "RW" else "",
             "rank": rank_value,
             "last_update_start": last_update_start,
             "last_update_end": last_update_end,
@@ -3296,42 +3420,119 @@ class ComboBoxSunting(QComboBox):
     def showPopup(self):
         # Jika sedang menampilkan locked value, reset dulu
         if hasattr(self, '_current_locked_code') and self._current_locked_code:
-            # Hapus locked code supaya bisa pilih dari dropdown
             self._current_locked_code = None
-        
+
         view = self.view()
-        if not view:
+
+        if view is None:
             super().showPopup()
             self._popup_open = True
             self._animate_arrow(True)
             self.update()
             return
 
+        # =========================================================
+        # Jika combo ini menggunakan popup scrollable,
+        # batasi jumlah item yang terlihat.
+        # Qt akan otomatis membuat scrollbar jika item lebih banyak.
+        # =========================================================
+        if self._scrollable_popup:
+            self.setMaxVisibleItems(self._scrollable_popup_items)
+
+            view.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            )
+
+            view.setUniformItemSizes(True)
+
+            # Scrollbar modern
+            view.verticalScrollBar().setStyleSheet("""
+                QScrollBar:vertical {
+                    background: transparent;
+                    width: 7px;
+                    margin: 2px 2px 2px 0px;
+                    border: none;
+                }
+
+                QScrollBar::handle:vertical {
+                    background: #B8BEC7;
+                    min-height: 28px;
+                    border-radius: 3px;
+                }
+
+                QScrollBar::handle:vertical:hover {
+                    background: #FF8800;
+                }
+
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {
+                    height: 0px;
+                    border: none;
+                    background: transparent;
+                }
+
+                QScrollBar::add-page:vertical,
+                QScrollBar::sub-page:vertical {
+                    background: transparent;
+                }
+            """)
+
+        # =========================================================
+        # Hitung lebar popup berdasarkan isi
+        # =========================================================
         try:
             fm = view.fontMetrics()
+
             max_text_width = max(
-                (fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())),
+                (
+                    fm.horizontalAdvance(self.itemText(i))
+                    for i in range(self.count())
+                ),
                 default=0
             )
-            padding = 56 
-            popup_width = max(self.width(), min(max_text_width + padding, self._max_popup_width))
-            
+
+            padding = 56
+
+            popup_width = max(
+                self.width(),
+                min(
+                    max_text_width + padding,
+                    self._max_popup_width
+                )
+            )
+
             view.setMinimumWidth(int(popup_width))
-            view.setTextElideMode(Qt.TextElideMode.ElideNone) 
+            view.setTextElideMode(
+                Qt.TextElideMode.ElideNone
+            )
 
         except Exception as e:
             print(f"[showPopup width calc Error] {e}")
             view.setMinimumWidth(self.width())
 
-        super().showPopup() 
+        # =========================================================
+        # Buka popup
+        # =========================================================
+        super().showPopup()
 
+        # =========================================================
+        # Pastikan popup tepat di bawah ComboBox
+        # =========================================================
         try:
             bottom_left = QPoint(0, self.height())
             global_pos = self.mapToGlobal(bottom_left)
-            view.window().move(global_pos)
+
+            popup_window = view.window()
+
+            if popup_window:
+                popup_window.move(global_pos)
+
         except Exception as e:
             print(f"[showPopup move Error] {e}")
 
+        # =========================================================
+        # Status dan animasi
+        # =========================================================
         self._popup_open = True
         self._animate_arrow(True)
         self.update()
@@ -4516,7 +4717,7 @@ class LoginWindow(QMainWindow):
 
         # === Tahapan ===
         self.tahapan_label = QLabel("Tahapan:")
-        self.tahapan_combo = QComboBox()
+        self.tahapan_combo = CustomComboBox()
         self.tahapan_combo.addItems(["-- Pilih Tahapan --", "DPHP", "DPSHP", "DPSHPA"])
         form_layout.addWidget(self.tahapan_label)
         form_layout.addWidget(self.tahapan_combo)
@@ -6042,8 +6243,12 @@ def restore_simpati(parent=None):
         _cleanup()
         show_modern_info(parent, "Restore Berhasil", "Semua data SIMPATI berhasil dipulihkan.")
         print("[RESTORE] Restore Berhasil, semua data SIMPATI berhasil dipulihkan.")
-        win = LoginWindow()
-        win.show()
+
+        from db_manager import get_connection
+        new_login_win = LoginWindow(get_connection())
+        globals()["win"] = new_login_win
+        new_login_win.show()
+
         if parent is not None:
             parent.close()
 
@@ -8072,27 +8277,9 @@ class MainWindow(QMainWindow):
             color: #222;
         """)
 
-        self.rows_combo = QComboBox()
+        self.rows_combo = CustomComboBox()
         self.rows_combo.setFixedWidth(80)
-        self.rows_combo.addItems(["50", "100", "200", "300"])
-        self.rows_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #ffffff;
-                border: 1px solid #999;
-                border-radius: 4px;
-                padding: 2px 6px;
-                font-family: 'Segoe UI';
-                font-size: 10pt;
-                color: #000000;
-            }
-            QComboBox:hover { border: 1px solid #d71d1d; }
-            QComboBox QAbstractItemView {
-                background: #ffffff;
-                selection-background-color: #d71d1d;
-                selection-color: white;
-                border: 1px solid #aaa;
-            }
-        """)
+        self.rows_combo.addItems(["50", "75", "100"])
 
         left_pagination_layout.addWidget(rows_label)
         left_pagination_layout.addWidget(self.rows_combo)
@@ -8148,7 +8335,7 @@ class MainWindow(QMainWindow):
 
         # Muat nilai tersimpan
         saved_rows = _load_rows_per_page()
-        if str(saved_rows) in ["50", "100", "200", "300"]:
+        if str(saved_rows) in ["50", "75", "100"]:
             self.rows_combo.setCurrentText(str(saved_rows))
         self.rows_per_page = saved_rows
 
@@ -9021,6 +9208,10 @@ class MainWindow(QMainWindow):
             conditions.append("SUMBER = ?");    params.append(filters["sumber"])
         if filters.get("tps"):
             conditions.append("TPS = ?");       params.append(filters["tps"])
+        if filters.get("rt"):
+            conditions.append("RT = ?");        params.append(filters["rt"])
+        if filters.get("rw"):
+            conditions.append("RW = ?");        params.append(filters["rw"])
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query = f"SELECT rowid, * FROM {tbl} {where_clause} ORDER BY rowid ASC"
@@ -16282,6 +16473,76 @@ class MainWindow(QMainWindow):
 
         return tps_list
     
+
+    def get_distinct_rt(self):
+        """Mengambil daftar DISTINCT RT dari tabel aktif (SQLCipher)."""
+        from db_manager import get_connection
+        rt_list = ["RT"]
+
+        try:
+            conn = get_connection()
+            if conn is None:
+                print("[get_distinct_rt] Koneksi belum siap.")
+                return rt_list
+
+            cur = conn.cursor()
+            tbl = self._active_table()
+
+            cur.execute(f"""
+                SELECT DISTINCT RT
+                FROM {tbl}
+                WHERE RT IS NOT NULL AND TRIM(CAST(RT AS TEXT)) != ''
+                ORDER BY CAST(RT AS INTEGER)
+            """)
+            rows = cur.fetchall()
+            rt_list += [str(r[0]) for r in rows if r[0] is not None]
+
+        except Exception as e:
+            print(f"[MainWindow.get_distinct_rt Error] {e}")
+
+        finally:
+            if 'conn' in locals():
+                try:
+                    conn.commit()
+                except:
+                    pass
+
+        return rt_list
+
+    def get_distinct_rw(self):
+        """Mengambil daftar DISTINCT RW dari tabel aktif (SQLCipher)."""
+        from db_manager import get_connection
+        rw_list = ["RW"]
+
+        try:
+            conn = get_connection()
+            if conn is None:
+                print("[get_distinct_rw] Koneksi belum siap.")
+                return rw_list
+
+            cur = conn.cursor()
+            tbl = self._active_table()
+
+            cur.execute(f"""
+                SELECT DISTINCT RW
+                FROM {tbl}
+                WHERE RW IS NOT NULL AND TRIM(CAST(RW AS TEXT)) != ''
+                ORDER BY CAST(RW AS INTEGER)
+            """)
+            rows = cur.fetchall()
+            rw_list += [str(r[0]) for r in rows if r[0] is not None]
+
+        except Exception as e:
+            print(f"[MainWindow.get_distinct_rw Error] {e}")
+
+        finally:
+            if 'conn' in locals():
+                try:
+                    conn.commit()
+                except:
+                    pass
+
+        return rw_list    
 
     def create_filter_sidebar(self):
         """Compatibility wrapper — gunakan toggle_filter_sidebar() sebagai satu-satunya implementasi."""
