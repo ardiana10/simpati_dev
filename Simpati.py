@@ -246,6 +246,89 @@ def show_modern_question(parent, title, text):
     result = msg.exec()
     return result == QMessageBox.StandardButton.Yes
 
+def konfirmasi_simpan_dokumen(parent, tahap, nama_dokumen, path_file):
+    """Dialog konfirmasi simpan bergaya SIMPATI (identik dengan dialog Berita Acara)."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Konfirmasi Simpan")
+    msg.setText(
+        f"Apakah Anda yakin ingin menyimpan {nama_dokumen} tahap <b>{tahap}</b>?<br><br>"
+        f"<b>Lokasi penyimpanan:</b><br>{path_file}"
+    )
+    msg.setIcon(QMessageBox.Icon.Question)
+    msg.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    msg.button(QMessageBox.StandardButton.Yes).setText("Simpan")
+    msg.button(QMessageBox.StandardButton.No).setText("Batal")
+    msg.setStyleSheet("""
+        QMessageBox { background-color: #ffffff; color: #000000; font-family: 'Segoe UI'; font-size: 10.5pt; }
+        QMessageBox QLabel { color: #000000; font-size: 11pt; font-weight: 500; }
+        QMessageBox QDialogButtonBox { background-color: #000000; border-top: 1px solid #222; }
+        QPushButton { min-width: 80px; min-height: 32px; border-radius: 6px; font-weight: bold; color: white; background-color: #ff6600; }
+        QPushButton:hover { background-color: #e65c00; }
+        QPushButton:pressed { background-color: #cc5200; }
+        QPushButton[text="Batal"] { background-color: #777777; }
+        QPushButton[text="Batal"]:hover { background-color: #555555; }
+    """)
+    return msg.exec() == QMessageBox.StandardButton.Yes
+
+def konfirmasi_simpan_webgrid(parent, tahap, jumlah_data):
+    """Dialog konfirmasi sebelum menyimpan data Webgrid TPS Reguler ke tabel aktif (gaya sama seperti Berita Acara)."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Konfirmasi Simpan")
+    msg.setText(
+        f"Apakah Anda yakin ingin menyimpan <b>{jumlah_data}</b> baris data pada Webgrid "
+        f"TPS Reguler tahap <b>{tahap}</b> ke tabel data pemilih aktif?<br><br>"
+        f"Sistem akan memvalidasi setiap baris terlebih dahulu, hanya data yang lolos validasi "
+        f"yang akan disimpan."
+    )
+    msg.setIcon(QMessageBox.Icon.Question)
+    msg.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    msg.button(QMessageBox.StandardButton.Yes).setText("Simpan")
+    msg.button(QMessageBox.StandardButton.No).setText("Batal")
+    msg.setStyleSheet("""
+        QMessageBox { background-color: #ffffff; color: #000000; font-family: 'Segoe UI'; font-size: 10.5pt; }
+        QMessageBox QLabel { color: #000000; font-size: 11pt; font-weight: 500; }
+        QMessageBox QDialogButtonBox { background-color: #000000; border-top: 1px solid #222; }
+        QPushButton { min-width: 80px; min-height: 32px; border-radius: 6px; font-weight: bold; color: white; background-color: #ff6600; }
+        QPushButton:hover { background-color: #e65c00; }
+        QPushButton:pressed { background-color: #cc5200; }
+        QPushButton[text="Batal"] { background-color: #777777; }
+        QPushButton[text="Batal"]:hover { background-color: #555555; }
+    """)
+    return msg.exec() == QMessageBox.StandardButton.Yes
+
+def konfirmasi_tutup_webgrid(parent, ada_data_belum_tersimpan=False):
+    """Dialog konfirmasi sebelum menutup Unggah Webgrid TPS Reguler (gaya sama seperti Berita Acara)."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Konfirmasi Tutup")
+    teks = (
+        "Apakah Anda yakin ingin menutup Unggah Webgrid TPS Reguler "
+        "dan kembali ke Tab Pemutakhiran Data Pemilih?"
+    )
+    if ada_data_belum_tersimpan:
+        teks += "<br><br><b>Data pada Webgrid yang belum disimpan akan hilang.</b>"
+    msg.setText(teks)
+    msg.setIcon(QMessageBox.Icon.Question)
+    msg.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    msg.button(QMessageBox.StandardButton.Yes).setText("Tutup")
+    msg.button(QMessageBox.StandardButton.No).setText("Batal")
+    msg.setStyleSheet("""
+        QMessageBox { background-color: #ffffff; color: #000000; font-family: 'Segoe UI'; font-size: 10.5pt; }
+        QMessageBox QLabel { color: #000000; font-size: 11pt; font-weight: 500; }
+        QMessageBox QDialogButtonBox { background-color: #000000; border-top: 1px solid #222; }
+        QPushButton { min-width: 80px; min-height: 32px; border-radius: 6px; font-weight: bold; color: white; background-color: #ff6600; }
+        QPushButton:hover { background-color: #e65c00; }
+        QPushButton:pressed { background-color: #cc5200; }
+        QPushButton[text="Batal"] { background-color: #777777; }
+        QPushButton[text="Batal"]:hover { background-color: #555555; }
+    """)
+    return msg.exec() == QMessageBox.StandardButton.Yes
+
 # ===================================================
 # 🎨 Gaya Universal Modern QMessageBox
 # ===================================================
@@ -5731,6 +5814,9 @@ def backup_simpati(parent=None):
     worker.finished_error.connect(on_err)
     worker.start()
 
+NONAKTIF_MARK = "@"  # prefix penanda data nonaktif di kolom KET
+def _is_ket_nonaktif(ket_val: str) -> bool:
+        return str(ket_val).strip() == NONAKTIF_MARK 
 
 def _lanjutkan_backup_setelah_file_siap(parent, backup_path, backup_code, ts):
     """Bagian ringan (dialog & clipboard) yang tetap di UI thread setelah file backup selesai dibuat."""
@@ -6628,7 +6714,6 @@ class SidalihSyncWorker(QThread):
         parent=None
     ):
         super().__init__(parent)
-
         self.reader = reader
         self.header = header
         self.idx_status = idx_status
@@ -6637,12 +6722,15 @@ class SidalihSyncWorker(QThread):
 
     def run(self):
         conn = None
-
+        began_tx = False
         try:
             import re
             import time
             from db_manager import get_temp_connection
 
+            # Koneksi independen khusus untuk thread ini (BUKAN koneksi
+            # global UI / get_connection()). Wajib ditutup sendiri di
+            # 'finally' — tidak berpengaruh ke koneksi global aplikasi.
             conn = get_temp_connection()
             cur = conn.cursor()
 
@@ -6651,17 +6739,20 @@ class SidalihSyncWorker(QThread):
             # ============================================================
             cur.executescript("""
                 PRAGMA busy_timeout = 20000;
-                PRAGMA synchronous = OFF;
+                PRAGMA synchronous = NORMAL;
                 PRAGMA temp_store = MEMORY;
-                PRAGMA journal_mode = WAL;
             """)
 
             # ============================================================
-            # Pastikan tabel aktif tersedia
+            # CEK TABEL
             # ============================================================
             cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name=?",
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type='table'
+                AND name=?
+                """,
                 (self.tbl_name,)
             )
 
@@ -6671,10 +6762,15 @@ class SidalihSyncWorker(QThread):
                 )
 
             # ============================================================
-            # Struktur tabel aktif
+            # STRUKTUR TABEL
             # ============================================================
-            cur.execute(f"PRAGMA table_info({self.tbl_name})")
-            tbl_cols = [row[1] for row in cur.fetchall()]
+            cur.execute(
+                f"PRAGMA table_info({self.tbl_name})"
+            )
+
+            tbl_info = cur.fetchall()
+            # row: (cid, name, type, notnull, dflt_value, pk)
+            tbl_cols = [row[1] for row in tbl_info]
 
             if not tbl_cols:
                 raise Exception(
@@ -6682,18 +6778,37 @@ class SidalihSyncWorker(QThread):
                 )
 
             # ============================================================
-            # Normalisasi nama header CSV
+            # KOLOM YANG DILINDUNGI (TIDAK BOLEH DIHAPUS / DIUBAH)
             #
-            # Contoh:
-            # TAHAPAN_ID
-            # tahapan_id
-            # TAHAPAN_Id
-            # tahapan-id
-            # tahapanid
-            # tahapan id
-            #
-            # semuanya menjadi:
-            # TAHAPANID
+            # - Kolom apa pun yang namanya berakhiran "_ASAL" -> DILINDUNGI
+            #   (dideteksi dinamis dari struktur tabel, bukan hardcode list)
+            # - Kolom DPID -> DILINDUNGI (identitas baris)
+            # - Kolom PRIMARY KEY (mis. id autoincrement) -> DILINDUNGI
+            # ============================================================
+            pk_cols = [
+                row[1]
+                for row in tbl_info
+                if row[5] and row[5] != 0
+            ]
+
+            asal_cols = [
+                col
+                for col in tbl_cols
+                if col.upper().endswith("_ASAL")
+            ]
+
+            protected_cols = set(pk_cols) | {"DPID"} | set(asal_cols)
+
+            # Kolom yang HARUS dikosongkan setiap sync
+            # (semua kolom tabel selain DPID, *_ASAL, dan PK)
+            clearable_cols = [
+                col
+                for col in tbl_cols
+                if col not in protected_cols
+            ]
+
+            # ============================================================
+            # NORMALISASI HEADER
             # ============================================================
             def normalize_header(value):
                 return re.sub(
@@ -6704,566 +6819,247 @@ class SidalihSyncWorker(QThread):
 
             normalized_header = {
                 normalize_header(name): idx
-                for idx, name in enumerate(self.header)
+                for idx, name
+                in enumerate(self.header)
             }
 
             # ============================================================
-            # Helper ambil nilai CSV TANPA mengubah isi aslinya
+            # AMBIL NILAI CSV ASLI
             # ============================================================
             def raw_value(row, idx):
                 if idx is None:
                     return ""
-
                 if idx >= len(row):
                     return ""
-
                 return row[idx]
 
             # ============================================================
-            # Alias kolom CSV -> kolom tabel
-            #
-            # Nilai TIDAK di-uppercase / trim / format.
-            # Tujuannya agar data tahapan terbesar tetap seperti CSV.
+            # ALIAS CSV -> KOLOM TABEL
             # ============================================================
             alias_groups = {
-                "KECAMATAN": [
-                    "KECAMATAN",
-                    "KEC",
-                    "DISTRIK",
-                    "NAMA KEC",
-                    "NAMA_KEC"
-                ],
-
+                "KECAMATAN": ["KECAMATAN", "KEC", "DISTRIK", "NAMA KEC", "NAMA_KEC"],
                 "DESA": [
-                    "KELURAHAN",
-                    "KEL",
-                    "DESA",
-                    "KEL/DESA",
-                    "DESA/KEL",
-                    "KELURAHAN/DESA",
-                    "DESA/KELURAHAN",
-                    "NAMA KEL",
-                    "NAMA_KEL",
-                    "NAMA DESA",
-                    "NAMA_DESA"
+                    "KELURAHAN", "KEL", "DESA", "KEL/DESA", "DESA/KEL",
+                    "KELURAHAN/DESA", "DESA/KELURAHAN", "NAMA KEL", "NAMA_KEL",
+                    "NAMA DESA", "NAMA_DESA"
                 ],
-
-                "DPID": [
-                    "DPID",
-                    "ID",
-                    "DP_ID",
-                    "DP ID"
-                ],
-
-                "NKK": [
-                    "NKK",
-                    "NO KK",
-                    "NO_KK"
-                ],
-
-                "NIK": [
-                    "NIK"
-                ],
-
-                "NAMA": [
-                    "NAMA",
-                    "NAMA LENGKAP",
-                    "NAMA_LENGKAP"
-                ],
-
-                "JK": [
-                    "KELAMIN",
-                    "JENIS_KELAMIN",
-                    "JENISKELAMIN",
-                    "JENIS KELAMIN",
-                    "JK"
-                ],
-
+                "DPID": ["DPID", "ID", "DP_ID", "DP ID"],
+                "NKK": ["NKK", "NO KK", "NO_KK"],
+                "NIK": ["NIK"],
+                "NAMA": ["NAMA", "NAMA LENGKAP", "NAMA_LENGKAP"],
+                "JK": ["KELAMIN", "JENIS_KELAMIN", "JENISKELAMIN", "JENIS KELAMIN", "JK"],
                 "TMPT_LHR": [
-                    "TEMPAT LAHIR",
-                    "TMPTLHR",
-                    "TMPT_LHR",
-                    "TEMPAT_LAHIR",
-                    "TMPT LAHIR",
-                    "TMPT_LAHIR",
-                    "TEMPATLAHIR"
+                    "TEMPAT LAHIR", "TMPTLHR", "TMPT_LHR", "TEMPAT_LAHIR",
+                    "TMPT LAHIR", "TMPT_LAHIR", "TEMPATLAHIR"
                 ],
-
                 "TGL_LHR": [
-                    "TANGGAL LAHIR",
-                    "TGLLHR",
-                    "TGL_LHR",
-                    "TANGGAL_LAHIR",
-                    "TGL LHR",
-                    "TGL_LAHIR",
-                    "TGL LAHIR",
-                    "TANGGALLAHIR"
+                    "TANGGAL LAHIR", "TGLLHR", "TGL_LHR", "TANGGAL_LAHIR",
+                    "TGL LHR", "TGL_LAHIR", "TGL LAHIR", "TANGGALLAHIR"
                 ],
-
                 "STS": [
-                    "STS KAWIN",
-                    "STS_KAWIN",
-                    "STATUS KAWIN",
-                    "STATUS_KAWIN",
-                    "STATUSKAWIN",
-                    "STS"
+                    "STS KAWIN", "STS_KAWIN", "STATUS KAWIN", "STATUS_KAWIN",
+                    "STATUSKAWIN", "STS"
                 ],
-
-                "ALAMAT": [
-                    "ALAMAT",
-                    "ALMT",
-                    "KAMPUNG",
-                    "JALAN"
-                ],
-
-                "RT": [
-                    "RT",
-                    "NO_RT",
-                    "NO RT"
-                ],
-
-                "RW": [
-                    "RW",
-                    "NO_RW",
-                    "NO RW"
-                ],
-
-                "DIS": [
-                    "DISABILITAS",
-                    "DIS",
-                    "DIFABEL",
-                    "DIF"
-                ],
-
-                "KTPel": [
-                    "EKTP",
-                    "KTP",
-                    "KTPEL",
-                    "KTP EL",
-                    "KTP_EL",
-                    "E KTP",
-                    "E_KTP"
-                ],
-
-                "SUMBER": [
-                    "SUMBER",
-                    "SMBR",
-                    "SUMBER DATA",
-                    "SUMBER_DATA",
-                    "SUMBERDATA"
-                ],
-
-                "KET": [
-                    "KETERANGAN",
-                    "KET"
-                ],
-
-                "TPS": [
-                    "TPS"
-                ],
-
-                "LastUpdate": [
-                    "UPDATED_AT",
-                    "UPDATED AT",
-                    "LAST_UPDATE",
-                    "LAST UPDATE"
-                ],
-
-                "checked": [
-                    "CHECKED"
-                ],
-
-                "CEK_DATA": [
-                    "CEK_DATA",
-                    "CEK DATA"
-                ],
-
-                "NKK_ASAL": [
-                    "NKK_ASAL",
-                    "NKK ASAL"
-                ],
-
-                "NIK_ASAL": [
-                    "NIK_ASAL",
-                    "NIK ASAL"
-                ],
-
-                "NAMA_ASAL": [
-                    "NAMA_ASAL",
-                    "NAMA ASAL"
-                ],
-
-                "JK_ASAL": [
-                    "JK_ASAL",
-                    "JK ASAL"
-                ],
-
-                "TMPT_LHR_ASAL": [
-                    "TMPT_LHR_ASAL",
-                    "TMPT LHR ASAL"
-                ],
-
-                "TGL_LHR_ASAL": [
-                    "TGL_LHR_ASAL",
-                    "TGL LHR ASAL"
-                ],
-
-                "STS_ASAL": [
-                    "STS_ASAL",
-                    "STS ASAL"
-                ],
-
-                "ALAMAT_ASAL": [
-                    "ALAMAT_ASAL",
-                    "ALAMAT ASAL"
-                ],
-
-                "RT_ASAL": [
-                    "RT_ASAL",
-                    "RT ASAL"
-                ],
-
-                "RW_ASAL": [
-                    "RW_ASAL",
-                    "RW ASAL"
-                ],
-
-                "DIS_ASAL": [
-                    "DIS_ASAL",
-                    "DIS ASAL"
-                ],
-
-                "KTPel_ASAL": [
-                    "KTPEL_ASAL",
-                    "KTPEL ASAL",
-                    "KTPel_ASAL"
-                ],
-
-                "SUMBER_ASAL": [
-                    "SUMBER_ASAL",
-                    "SUMBER ASAL"
-                ],
-
-                "TPS_ASAL": [
-                    "TPS_ASAL",
-                    "TPS ASAL"
-                ],
+                "ALAMAT": ["ALAMAT", "ALMT", "KAMPUNG", "JALAN"],
+                "RT": ["RT", "NO_RT", "NO RT"],
+                "RW": ["RW", "NO_RW", "NO RW"],
+                "DIS": ["DISABILITAS", "DIS", "DIFABEL", "DIF"],
+                "KTPel": ["EKTP", "KTP", "KTPEL", "KTP EL", "KTP_EL", "E KTP", "E_KTP"],
+                "SUMBER": ["SUMBER", "SMBR", "SUMBER DATA", "SUMBER_DATA", "SUMBERDATA"],
+                "KET": ["KETERANGAN", "KET"],
+                "TPS": ["TPS"],
+                "LastUpdate": ["UPDATED_AT", "UPDATED AT", "LAST_UPDATE", "LAST UPDATE"]
             }
 
             # ============================================================
-            # Buat mapping index CSV -> kolom tabel
+            # MAPPING HEADER CSV
             # ============================================================
             column_indices = {}
-
             for target_col, aliases in alias_groups.items():
-
                 for alias in aliases:
-
                     key = normalize_header(alias)
-
                     if key in normalized_header:
                         column_indices[target_col] = normalized_header[key]
                         break
 
             # ============================================================
-            # Cari semua tahapan_id valid
-            # Hanya baris yang STATUS != DELETE
+            # CARI TAHAPAN_ID VALID (HANYA STATUS != DELETE)
             # ============================================================
             tahapan_values = []
 
             for row in self.reader[1:]:
-
                 if not row:
                     continue
 
-                status_val = raw_value(
-                    row,
-                    self.idx_status
-                ).strip().upper()
-
+                status_val = raw_value(row, self.idx_status).strip().upper()
                 if status_val == "DELETE":
                     continue
 
-                raw_tahapan = raw_value(
-                    row,
-                    self.idx_tahapan
-                ).strip()
-
+                raw_tahapan = raw_value(row, self.idx_tahapan).strip()
                 if raw_tahapan == "":
-                    raise Exception(
-                        "Ditemukan data dengan TAHAPAN_ID kosong."
-                    )
+                    raise Exception("Ditemukan data dengan TAHAPAN_ID kosong.")
 
                 try:
                     tahapan_num = int(raw_tahapan)
                 except ValueError:
-                    raise Exception(
-                        f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}"
-                    )
+                    raise Exception(f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}")
 
                 tahapan_values.append(tahapan_num)
 
             if not tahapan_values:
-                raise Exception(
-                    "Tidak ada data Sidalih yang dapat disinkronkan."
-                )
+                raise Exception("Tidak ada data Sidalih yang dapat disinkronkan.")
 
-            # ============================================================
-            # Ambil TAHAPAN_ID paling besar
-            # ============================================================
             max_tahapan_id = max(tahapan_values)
 
             # ============================================================
-            # Kolom yang digunakan
+            # KOLOM SEMANTIK YANG BISA DIISI DARI CSV
+            # (whitelist ini hanya dipakai untuk mapping alias CSV,
+            #  BUKAN untuk menentukan kolom mana yang harus dihapus —
+            #  itu sudah ditentukan dinamis lewat clearable_cols di atas)
             # ============================================================
-            ordered_cols = [
-                "checked",
-                "KECAMATAN",
-                "DESA",
-                "DPID",
-                "NKK",
-                "NIK",
-                "NAMA",
-                "JK",
-                "TMPT_LHR",
-                "TGL_LHR",
-                "STS",
-                "ALAMAT",
-                "RT",
-                "RW",
-                "DIS",
-                "KTPel",
-                "SUMBER",
-                "KET",
-                "TPS",
-                "LastUpdate",
-                "CEK_DATA",
-                "NKK_ASAL",
-                "NIK_ASAL",
-                "NAMA_ASAL",
-                "JK_ASAL",
-                "TMPT_LHR_ASAL",
-                "TGL_LHR_ASAL",
-                "STS_ASAL",
-                "ALAMAT_ASAL",
-                "RT_ASAL",
-                "RW_ASAL",
-                "DIS_ASAL",
-                "KTPel_ASAL",
-                "SUMBER_ASAL",
-                "TPS_ASAL"
+            sync_cols_all = [
+                "KECAMATAN", "DESA", "DPID", "NKK", "NIK", "NAMA", "JK",
+                "TMPT_LHR", "TGL_LHR", "STS", "ALAMAT", "RT", "RW", "DIS",
+                "KTPel", "SUMBER", "KET", "TPS", "LastUpdate"
             ]
 
-            # Pastikan semua kolom memang ada di tabel
-            missing_cols = [
-                col for col in ordered_cols
-                if col not in tbl_cols
-            ]
-
+            missing_cols = [col for col in sync_cols_all if col not in tbl_cols]
             if missing_cols:
                 raise Exception(
                     f"Kolom tabel {self.tbl_name} tidak ditemukan: "
-                    f"{', '.join(missing_cols)}"
+                    + ", ".join(missing_cols)
+                )
+
+            sync_cols = [
+                col for col in sync_cols_all
+                if col in tbl_cols and col != "DPID"
+            ]
+
+            # Kolom yang benar-benar akan ditulis dari CSV = irisan
+            # sync_cols dengan clearable_cols (jaga2 kalau ada kolom
+            # semantik yang ternyata masuk daftar protected/pk)
+            update_cols = [col for col in sync_cols if col in clearable_cols]
+
+            # ============================================================
+            # BACKUP *_ASAL BERDASARKAN DPID (data lama, tidak boleh berubah)
+            # ============================================================
+            asal_backup = {}
+            if asal_cols:
+                cur.execute(
+                    f"""
+                    SELECT DPID, {",".join(f'"{c}"' for c in asal_cols)}
+                    FROM {self.tbl_name}
+                    """
+                )
+            else:
+                cur.execute(f"SELECT DPID FROM {self.tbl_name}")
+
+            for row in cur.fetchall():
+                dpid_lama = row[0]
+                if dpid_lama is None:
+                    continue
+                asal_backup[str(dpid_lama).strip().upper()] = (
+                    dict(zip(asal_cols, row[1:])) if asal_cols else {}
                 )
 
             # ============================================================
-            # Siapkan data
+            # SIAPKAN DATA BARU
             # ============================================================
-            batch_values = []
-
+            batch_values = []  # list of dict
             total_rows = max(1, len(self.reader) - 1)
 
-            for i, row in enumerate(
-                self.reader[1:],
-                start=1
-            ):
-
+            for i, row in enumerate(self.reader[1:], start=1):
                 if not row:
                     continue
 
-                # ========================================================
-                # FILTER STATUS
-                # DELETE:
-                #   semua tahapan -> tidak dibawa
-                # TMS:
-                #   hanya dibuang jika bukan tahapan terbaru
-                # ========================================================
-                status_val = raw_value(
-                    row,
-                    self.idx_status
-                ).strip().upper()
-
-
+                status_val = raw_value(row, self.idx_status).strip().upper()
                 if status_val == "DELETE":
                     continue
 
-                # ========================================================
-                # TAHAPAN_ID
-                # ========================================================
-                raw_tahapan = raw_value(
-                    row,
-                    self.idx_tahapan
-                ).strip()
-
-                # TIDAK BOLEH DI-SKIP DI SINI.
-                # Karena sebelumnya sudah divalidasi.
+                raw_tahapan = raw_value(row, self.idx_tahapan).strip()
                 if not raw_tahapan:
-                    raise Exception(
-                        "Ditemukan data dengan TAHAPAN_ID kosong."
-                    )
+                    raise Exception("Ditemukan data dengan TAHAPAN_ID kosong.")
 
                 try:
                     tahapan_num = int(raw_tahapan)
-                except (ValueError, TypeError):
-                    raise Exception(
-                        f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}"
-                    )
+                except Exception:
+                    raise Exception(f"Nilai TAHAPAN_ID tidak valid: {raw_tahapan}")
 
-                # ========================================================
-                # TENTUKAN TAHAPAN TERBESAR
-                # ========================================================
-                is_latest = (
-                    tahapan_num == max_tahapan_id
-                )
+                is_latest = (tahapan_num == max_tahapan_id)
 
-                if (
-                    not is_latest
-                    and status_val == "TMS"
-                ):
+                if not is_latest and status_val == "TMS":
                     continue
 
-                # ========================================================
-                # AMBIL SEMUA DATA DARI CSV APA ADANYA
-                #
-                # Tidak uppercase
-                # Tidak trim
-                # Tidak format ulang
-                # Tidak mengubah nilai sumber
-                # ========================================================
+                # --------------------------------------------------------
+                # AMBIL DATA CSV (hanya untuk kolom yang boleh diubah)
+                # --------------------------------------------------------
                 data = {}
-
-                for col in ordered_cols:
-
+                for col in sync_cols:
                     if col in column_indices:
-
-                        val = raw_value(
-                            row,
-                            column_indices[col]
-                        )
-
+                        val = raw_value(row, column_indices[col])
                         if val is None:
                             val = ""
-
-                        val = str(val).strip().upper()
-
-                        data[col] = val
-
+                        data[col] = str(val).strip().upper()
                     else:
                         data[col] = ""
 
-                # ========================================================
-                # ATUR KOLOM INTERNAL
-                #
-                # Jika kolom tersebut TIDAK ADA di CSV,
-                # baru gunakan nilai default.
-                # ========================================================
-                if "checked" not in column_indices:
-                    data["checked"] = 0
-
-                # ========================================================
-                # *_ASAL
-                #
-                # Jika kolom *_ASAL memang ada di CSV,
-                # PERTAHANKAN NILAI CSV APA ADANYA.
-                #
-                # Jika tidak ada, baru salin dari kolom utama.
-                # ========================================================
-                asal_map = {
-                    "NKK_ASAL": "NKK",
-                    "NIK_ASAL": "NIK",
-                    "NAMA_ASAL": "NAMA",
-                    "JK_ASAL": "JK",
-                    "TMPT_LHR_ASAL": "TMPT_LHR",
-                    "TGL_LHR_ASAL": "TGL_LHR",
-                    "STS_ASAL": "STS",
-                    "ALAMAT_ASAL": "ALAMAT",
-                    "RT_ASAL": "RT",
-                    "RW_ASAL": "RW",
-                    "DIS_ASAL": "DIS",
-                    "KTPel_ASAL": "KTPel",
-                    "SUMBER_ASAL": "SUMBER",
-                    "TPS_ASAL": "TPS",
-                }
-
-                for asal_col, source_col in asal_map.items():
-
-                    if asal_col not in column_indices:
-                        data[asal_col] = data.get(
-                            source_col,
-                            ""
-                        )
-
-                # ========================================================
-                # ATUR KET
-                #
-                # TAHAPAN TERBESAR:
-                #     TIDAK DIUBAH SAMA SEKALI
-                #
-                # TAHAPAN LEBIH KECIL:
-                #     HANYA KET yang diubah menjadi "0"
-                # ========================================================
                 if not is_latest:
                     data["KET"] = "0"
 
-                # ========================================================
-                # MASUKKAN KE BATCH
-                # ========================================================
-                batch_values.append(
-                    tuple(
-                        data.get(col, "")
-                        for col in ordered_cols
-                    )
-                )
+                # --------------------------------------------------------
+                # DPID
+                # --------------------------------------------------------
+                dpid = ""
+                if "DPID" in column_indices:
+                    dpid = str(raw_value(row, column_indices["DPID"])).strip().upper()
 
-                # ========================================================
-                # PROGRESS
-                # ========================================================
+                if not dpid:
+                    raise Exception("Ditemukan data dengan DPID kosong.")
+
+                data["DPID"] = dpid
+
+                # --------------------------------------------------------
+                # RESTORE *_ASAL — TIDAK PERNAH DARI CSV
+                # DPID lama -> pakai histori lama
+                # DPID baru -> kosong
+                # --------------------------------------------------------
+                if dpid in asal_backup:
+                    for col in asal_cols:
+                        data[col] = asal_backup[dpid].get(col, "")
+                else:
+                    for col in asal_cols:
+                        data[col] = ""
+
+                batch_values.append(data)
+
                 if i % max(1, total_rows // 100) == 0:
-                    self.progress.emit(
-                        min(
-                            100,
-                            int(i / total_rows * 100)
-                        )
-                    )
+                    self.progress.emit(min(100, int(i / total_rows * 100)))
 
-            # ============================================================
-            # Tidak ada data
-            # ============================================================
             if not batch_values:
+                raise Exception("Tidak ada data yang dapat disinkronkan.")
+
+            cur.execute(f"SELECT COUNT(*) FROM {self.tbl_name}")
+            old_count = cur.fetchone()[0]
+
+            if old_count > 0 and len(asal_backup) == 0:
                 raise Exception(
-                    "Tidak ada data yang dapat disinkronkan."
+                    "Backup *_ASAL kosong. "
+                    "Proses dihentikan untuk mencegah kehilangan histori."
                 )
 
             # ============================================================
             # TRANSAKSI
             # ============================================================
             for attempt in range(5):
-
                 try:
                     cur.execute("BEGIN IMMEDIATE;")
+                    began_tx = True
                     break
-
                 except Exception as lock_err:
-
-                    if (
-                        "locked" in str(lock_err).lower()
-                        or "busy" in str(lock_err).lower()
-                    ):
+                    if "locked" in str(lock_err).lower() or "busy" in str(lock_err).lower():
                         time.sleep(0.5)
                         continue
-
                     raise
-
             else:
                 raise Exception(
                     "Database sedang sibuk (locked). "
@@ -7271,63 +7067,114 @@ class SidalihSyncWorker(QThread):
                 )
 
             # ============================================================
-            # HAPUS ISI TABEL AKTIF SAJA
-            #
-            # TIDAK MENYENTUH:
-            # data_awal
-            # data_awal_dphp
-            # data_awal_dphsp
-            # data_awal_dphspa
+            # RESET SEMUA KOLOM SELAIN DPID, *_ASAL, DAN PK
             # ============================================================
-            cur.execute(
-                f"DELETE FROM {self.tbl_name}"
-            )
+            if clearable_cols:
+                cur.execute(
+                    f"""
+                    UPDATE {self.tbl_name}
+                    SET {",".join(f'"{col}"=?' for col in clearable_cols)}
+                    """,
+                    ["" for _ in clearable_cols]
+                )
 
             # ============================================================
-            # INSERT HASIL SYNC
+            # AMBIL ULANG DPID YANG SUDAH ADA (DPID tidak berubah saat reset)
             # ============================================================
-            placeholders = ",".join(
-                ["?"] * len(ordered_cols)
-            )
+            cur.execute(f"SELECT DPID FROM {self.tbl_name}")
+            existing_dpid = {
+                str(row[0]).strip().upper()
+                for row in cur.fetchall()
+                if row[0] is not None
+            }
 
-            cols_sql = ",".join(
-                f'"{col}"'
-                for col in ordered_cols
-            )
+            # ============================================================
+            # HAPUS BARIS YANG TIDAK ADA DI HASIL SYNC
+            # (DPID lama yang tidak lolos syarat CSV -> sudah dikosongkan
+            #  oleh RESET di atas dan tidak akan pernah diisi ulang -> DIHAPUS)
+            # ============================================================
+            synced_dpid = {d["DPID"] for d in batch_values}
+            dpid_to_delete = existing_dpid - synced_dpid
 
-            cur.executemany(
-                f"""
-                INSERT INTO {self.tbl_name}
-                ({cols_sql})
-                VALUES ({placeholders})
-                """,
-                batch_values
-            )
+            deleted_count = 0
+            if dpid_to_delete:
+                dpid_to_delete_list = list(dpid_to_delete)
+                chunk_size = 500
+                for i in range(0, len(dpid_to_delete_list), chunk_size):
+                    chunk = dpid_to_delete_list[i:i + chunk_size]
+                    qmarks = ",".join("?" * len(chunk))
+                    cur.execute(
+                        f"DELETE FROM {self.tbl_name} WHERE DPID IN ({qmarks})",
+                        chunk
+                    )
+                    deleted_count += len(chunk)
+
+            # ============================================================
+            # SIAPKAN STATEMENT UPDATE & INSERT
+            # ============================================================
+            update_sql = None
+            if update_cols:
+                update_sql = f"""
+                UPDATE {self.tbl_name}
+                SET {",".join(f'"{col}"=?' for col in update_cols)}
+                WHERE DPID=?
+                """
+
+            insert_cols = ["DPID"] + clearable_cols + asal_cols
+            insert_sql = f"""
+            INSERT INTO {self.tbl_name}
+            ({",".join(f'"{col}"' for col in insert_cols)})
+            VALUES ({",".join("?" for _ in insert_cols)})
+            """
+
+            update_rows = []
+            insert_rows = []
+
+            for data in batch_values:
+                dpid = data["DPID"]
+
+                if dpid in existing_dpid:
+                    if update_sql:
+                        update_rows.append(
+                            [data.get(col, "") for col in update_cols] + [dpid]
+                        )
+                else:
+                    insert_rows.append(
+                        tuple(data.get(col, "") for col in insert_cols)
+                    )
+
+            # ============================================================
+            # EKSEKUSI MASSAL
+            # ============================================================
+            if update_rows and update_sql:
+                cur.executemany(update_sql, update_rows)
+
+            if insert_rows:
+                cur.executemany(insert_sql, insert_rows)
 
             # ============================================================
             # COMMIT
             # ============================================================
             conn.commit()
+            began_tx = False
 
             self.progress.emit(100)
-            self.finished_ok.emit(
-                len(batch_values)
-            )
+            self.finished_ok.emit(len(batch_values))
 
         except Exception as e:
-
-            if conn is not None:
+            if conn is not None and began_tx:
                 try:
                     conn.rollback()
                 except Exception:
                     pass
-
-            self.finished_error.emit(
-                str(e)
-            )
+            self.finished_error.emit(str(e))
 
         finally:
-
+            # Tutup koneksi milik worker ini sendiri (get_temp_connection()
+            # selalu membuat koneksi baru & independen per thread).
+            # Ini TIDAK memutus koneksi global (_connection) yang dipakai
+            # main/UI thread lewat get_connection() — keduanya connection
+            # object yang berbeda ke file DB yang sama.
             if conn is not None:
                 try:
                     conn.close()
@@ -7650,7 +7497,7 @@ class MainWindow(QMainWindow):
         action_pemutakhiran.triggered.connect(self.show_data_page)
         file_menu.addAction(action_pemutakhiran)
 
-        action_unggah_reguler = QAction(" Unggah Webgrid TPS Reguler", self)
+        action_unggah_reguler = QAction(" Input Webgrid TPS Reguler", self)
         action_unggah_reguler.setShortcut("Alt+U")
         action_unggah_reguler.triggered.connect(self.open_unggah_reguler)
         file_menu.addAction(action_unggah_reguler)
@@ -9506,7 +9353,7 @@ class MainWindow(QMainWindow):
         def _get_header_stats(self, conn=None):
             cur = conn.cursor()
             tbl = self._active_table()
-            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8)"
+            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8) AND KET <> '@'"
 
             cur.execute(f"SELECT COUNT(*) FROM {tbl} {where_filter}")
             total = cur.fetchone()[0] or 0
@@ -9694,7 +9541,7 @@ class MainWindow(QMainWindow):
         def get_dashboard_data(self, conn=None):
             cur = conn.cursor()
             tbl = self._active_table()
-            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8)"
+            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8) AND KET <> '@'"
 
             cur.execute(f"SELECT COUNT(*) FROM {tbl} {where_filter}")
             total = cur.fetchone()[0] or 0
@@ -10253,7 +10100,7 @@ class MainWindow(QMainWindow):
         def get_dashboard_data(self, conn=None):
             cur = conn.cursor()
             tbl = self._active_table()
-            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8)"
+            where_filter = "WHERE CAST(KET AS INTEGER) NOT IN (1,2,3,4,5,6,7,8) AND KET <> '@'"
 
             # Total pemilih
             cur.execute(f"SELECT COUNT(*) FROM {tbl} {where_filter}")
@@ -10744,7 +10591,7 @@ class MainWindow(QMainWindow):
                 if checked:
                     cell.setBackground(Qt.GlobalColor.lightGray)
                 else:
-                    cell.setBackground(Qt.GlobalColor.transparent)
+                    cell.setBackground(self._bg_default_row(r))
 
         self.table.blockSignals(False)
 
@@ -10837,6 +10684,7 @@ class MainWindow(QMainWindow):
         actions = [
             ("🔁 Resolve", lambda: self._aktifkan_pemilih_auto(checked_rows)),
             ("🔥 Hapus", lambda: self._hapus_pemilih_auto(checked_rows)),
+            #("🌫️ Tangguhkan", lambda: self._nonaktifkan_pemilih_auto(checked_rows)),
             #("🚫 1. Meninggal", lambda: self._set_status_auto(checked_rows, "1", "Meninggal")),
             #("⚠️ 2. Ganda", lambda: self._set_status_auto(checked_rows, "2", "Ganda")),
             #("🧒 3. Di Bawah Umur", lambda: self._set_status_auto(checked_rows, "3", "Di Bawah Umur")),
@@ -10862,6 +10710,15 @@ class MainWindow(QMainWindow):
         if not chosen_action:
             self._clear_row_selection(checked_rows)
 
+
+    def _row_ket_nonaktif(self, row: int) -> bool:
+        ci = self.col_index("KET")
+        it = self.table.item(row, ci) if ci != -1 else None
+        return _is_ket_nonaktif(it.text().strip() if it else "")
+
+    def _bg_default_row(self, row: int):
+        from PyQt6.QtGui import QColor
+        return QColor("#4d4d4d") if self._row_ket_nonaktif(row) else Qt.GlobalColor.transparent
 
     # =============================
     # 🔧 Batch Stats Helpers
@@ -11249,6 +11106,181 @@ class MainWindow(QMainWindow):
             self.hapus_banyak_pemilih(rows)
 
 
+    # =========================================================
+    # 🔹 NONAKTIFKAN SATU PEMILIH
+    # =========================================================
+    @with_safe_db
+    def nonaktifkan_satu_pemilih(self, row, conn=None):
+        """Nonaktifkan satu baris data (tidak dihapus). Ditandai di KET agar tidak masuk rekap/ekspor apapun."""
+        try:
+            tbl = self._active_table()
+            if not tbl:
+                show_modern_warning(self, "Error", "Tabel aktif tidak ditemukan.")
+                return
+
+            def _val(col):
+                ci = self.col_index(col)
+                it = self.table.item(row, ci) if ci != -1 else None
+                return it.text().strip() if it else ""
+
+            nama, nik, nkk, dpid, tgl, ket = map(_val, ["NAMA", "NIK", "NKK", "DPID", "TGL_LHR", "KET"])
+
+            if ket == NONAKTIF_MARK:
+                show_modern_warning(self, "Info", f"{nama} sudah berstatus nonaktif.")
+                return
+
+            if not show_modern_question(
+                self,
+                "Konfirmasi Nonaktifkan",
+                f"Apakah Anda yakin ingin menonaktifkan data ini?<br>"
+                f"<b>{nama}</b><br>NIK: <b>{nik}</b><br>NKK: <b>{nkk}</b><br><br>"
+                f"Data nonaktif tidak akan dihitung di rekap apapun dan tidak akan "
+                f"ikut diekspor/dicetak dalam dokumen apapun (termasuk Bulk Sidalih)."
+            ):
+                return
+
+            ket_baru = NONAKTIF_MARK  # literal "@" — status asal disimpan ke CEK_DATA
+
+            with self.freeze_ui():
+                conn = get_connection()
+                conn.executescript("PRAGMA busy_timeout = 3000; PRAGMA journal_mode = WAL;")
+                cur = conn.cursor()
+                if dpid and dpid != "0":
+                    cur.execute(f"UPDATE {tbl} SET KET = ?, CEK_DATA = ? WHERE DPID = ?", (ket_baru, ket, dpid))
+                else:
+                    cur.execute(f"""
+                        UPDATE {tbl} SET KET = ?, CEK_DATA = ?
+                        WHERE IFNULL(NIK,'')=? AND IFNULL(NKK,'')=? AND IFNULL(TGL_LHR,'')=? AND IFNULL(KET,'')=?
+                    """, (ket_baru, ket, nik, nkk, tgl, ket))
+                conn.commit()
+
+                gi = self._global_index(row)
+                if 0 <= gi < len(self.all_data):
+                    self.all_data[gi]["KET"] = ket_baru
+
+                ci_ket = self.col_index("KET")
+                if ci_ket != -1:
+                    item = self.table.item(row, ci_ket)
+                    if item:
+                        item.setText(ket_baru)
+
+                self._warna_sudah_dihitung = False
+                self.load_data_setelah_hapus()
+                QTimer.singleShot(150, lambda: self._refresh_dan_buka_repaint())
+
+            show_modern_info(self, "Selesai", f"{nama} berhasil dinonaktifkan.")
+
+        except Exception as e:
+            show_modern_error(self, "Error", f"Gagal menonaktifkan data:\n{e}")
+        finally:
+            try:
+                self._clear_row_selection(row)
+                self._reset_tabel_background()
+            except Exception:
+                pass
+
+
+    # =========================================================
+    # 🔹 NONAKTIFKAN BANYAK PEMILIH (BATCH)
+    # =========================================================
+    @with_safe_db
+    def nonaktifkan_banyak_pemilih(self, rows, conn=None):
+        """Nonaktifkan banyak baris sekaligus (tidak dihapus dari database)."""
+        try:
+            if not rows:
+                show_modern_warning(self, "Tidak Ada Data", "Tidak ada baris yang dipilih.")
+                return
+
+            tbl = self._active_table()
+            if not tbl:
+                show_modern_warning(self, "Error", "Tabel aktif tidak ditemukan.")
+                return
+
+            if not show_modern_question(
+                self,
+                "Konfirmasi Batch",
+                f"Anda yakin ingin menonaktifkan <b>{len(rows)}</b> data pemilih?<br>"
+                f"Data nonaktif tidak akan dihitung di rekap apapun."
+            ):
+                return
+
+            with self.freeze_ui():
+                conn = get_connection()
+                cur = conn.cursor()
+                conn.executescript("""
+                    PRAGMA synchronous = OFF;
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA temp_store = MEMORY;
+                    PRAGMA cache_size = 100000;
+                """)
+
+                ok = skipped = 0
+                ci_ket = self.col_index("KET")
+
+                for row in rows:
+                    def _val(col):
+                        ci = self.col_index(col)
+                        it = self.table.item(row, ci) if ci != -1 else None
+                        return it.text().strip() if it else ""
+
+                    nik, nkk, dpid, tgl, ket = map(_val, ["NIK", "NKK", "DPID", "TGL_LHR", "KET"])
+
+                    if _is_ket_nonaktif(ket):
+                        skipped += 1
+                        continue
+
+                    ket_baru = NONAKTIF_MARK  # literal "@" — konsisten dengan versi satu-data
+                    if dpid and dpid != "0":
+                        cur.execute(f"UPDATE {tbl} SET KET = ?, CEK_DATA = ? WHERE DPID = ?", (ket_baru, ket, dpid))
+                    else:
+                        cur.execute(f"""
+                            UPDATE {tbl} SET KET = ?, CEK_DATA = ?
+                            WHERE IFNULL(NIK,'')=? AND IFNULL(NKK,'')=? AND IFNULL(TGL_LHR,'')=? AND IFNULL(KET,'')=?
+                        """, (ket_baru, ket, nik, nkk, tgl, ket))
+
+                    gi = self._global_index(row)
+                    if 0 <= gi < len(self.all_data):
+                        self.all_data[gi]["KET"] = ket_baru
+                    if ci_ket != -1:
+                        item = self.table.item(row, ci_ket)
+                        if item:
+                            item.setText(ket_baru)
+                    ok += 1
+
+                conn.commit()
+                self._warna_sudah_dihitung = False
+                self.load_data_setelah_hapus()
+                QTimer.singleShot(200, lambda: self._refresh_dan_buka_repaint())
+
+                msg = f"✅ {ok} dinonaktifkan"
+                if skipped:
+                    msg += f", ⏸️ {skipped} dilewati (sudah nonaktif)"
+                show_modern_info(self, "Selesai", msg)
+
+        except Exception as e:
+            show_modern_error(self, "Error", f"Gagal menonaktifkan data batch:\n{e}")
+        finally:
+            try:
+                if conn:
+                    conn.commit()
+                self._clear_row_selection(rows)
+                self._reset_tabel_background()
+            except Exception:
+                pass
+
+
+    # =========================================================
+    # 🔹 ROUTER: otomatis pilih nonaktifkan satu / banyak
+    # =========================================================
+    def _nonaktifkan_pemilih_auto(self, rows):
+        if not rows:
+            show_modern_warning(self, "Tidak Ada Data", "Tidak ada baris yang dipilih untuk dinonaktifkan.")
+            return
+        if len(rows) == 1:
+            self.nonaktifkan_satu_pemilih(rows[0])
+        else:
+            self.nonaktifkan_banyak_pemilih(rows)    
+
     def _clear_row_selection(self, rows):
         """Reset seleksi & ceklis. rows boleh int atau list[int]."""
         # Normalisasi ke list
@@ -11287,10 +11319,11 @@ class MainWindow(QMainWindow):
             default_brush = QBrush(Qt.GlobalColor.transparent)
 
             for row in range(self.table.rowCount()):
+                bg = self._bg_default_row(row)
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
                     if item:
-                        item.setBackground(default_brush)
+                        item.setBackground(bg)
 
             # 🔹 Bersihkan seleksi dan refresh tampilan
             self.table.clearSelection()
@@ -11320,7 +11353,7 @@ class MainWindow(QMainWindow):
                 ket  = _val("KET")
 
                 # Hanya TMS (1–8, u/U) yang bisa diaktifkan ulang
-                if not dpid or dpid == "0" or ket not in ("1","2","3","4","5","6","7","8","u","U"):
+                if not dpid or dpid == "0" or ket not in ("1","2","3","4","5","6","7","8","u","U","@"):
                     #show_modern_warning(self, "Ditolak", f"{nama} tidak dapat diaktifkan.")
                     return
 
@@ -12493,7 +12526,7 @@ class MainWindow(QMainWindow):
             for d in all_data:
                 nik = d.get("NIK", "").strip()
                 ket = d.get("KET", "").strip().upper()
-                if nik and ket not in ("1", "2", "3", "4", "5", "6", "7", "8"):
+                if nik and ket not in ("1", "2", "3", "4", "5", "6", "7", "8", "@"):
                     nik_groups[nik].append(d)
 
             # === Deteksi NIK yang muncul lebih dari satu kali ===
@@ -12899,10 +12932,12 @@ class MainWindow(QMainWindow):
 
         for row, d in enumerate(page_data):
             brush = d.get("_warna_font", QBrush())
+            bg = self._bg_default_row(row)
             for c in range(self.table.columnCount()):
                 item = self.table.item(row, c)
                 if item:
                     item.setForeground(brush)
+                    item.setBackground(bg)
 
     def _col_index(self, name):
         """Helper untuk ambil index kolom berdasar nama."""
@@ -14594,7 +14629,7 @@ class MainWindow(QMainWindow):
                 if not cell:
                     cell = QTableWidgetItem("")
                     self.table.setItem(row, c, cell)
-                cell.setBackground(Qt.GlobalColor.lightGray if checked else Qt.GlobalColor.transparent)
+                cell.setBackground(Qt.GlobalColor.lightGray if checked else self._bg_default_row(row))
             self.update_statusbar()
 
     # =================================================
@@ -15204,19 +15239,19 @@ class MainWindow(QMainWindow):
                 cur.execute(f"""
                     SELECT COUNT(DISTINCT NKK)
                     FROM {tbl_name}
-                    WHERE TPS=? AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    WHERE TPS=? AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 nkk = cur.fetchone()[0] or 0
 
                 cur.execute(f"""
                     SELECT COUNT(*) FROM {tbl_name}
-                    WHERE TPS=? AND JK='L' AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    WHERE TPS=? AND JK='L' AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 jml_L = cur.fetchone()[0] or 0
 
                 cur.execute(f"""
                     SELECT COUNT(*) FROM {tbl_name}
-                    WHERE TPS=? AND JK='P' AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    WHERE TPS=? AND JK='P' AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 jml_P = cur.fetchone()[0] or 0
 
@@ -15588,7 +15623,7 @@ class MainWindow(QMainWindow):
                     FROM {tbl_name}
                     WHERE TPS=?
                     AND LOWER(COALESCE(KTPel,''))='b'
-                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 nkk = cur.fetchone()[0] or 0
 
@@ -15596,7 +15631,7 @@ class MainWindow(QMainWindow):
                     SELECT COUNT(*) FROM {tbl_name}
                     WHERE TPS=? AND JK='L'
                     AND LOWER(COALESCE(KTPel,''))='b'
-                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 jml_L = cur.fetchone()[0] or 0
 
@@ -15604,7 +15639,7 @@ class MainWindow(QMainWindow):
                     SELECT COUNT(*) FROM {tbl_name}
                     WHERE TPS=? AND JK='P'
                     AND LOWER(COALESCE(KTPel,''))='b'
-                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 jml_P = cur.fetchone()[0] or 0
 
@@ -15653,7 +15688,7 @@ class MainWindow(QMainWindow):
                     FROM {tbl_name}
                     WHERE TPS=? 
                     AND COALESCE(DIS,'') IN ('1','2','3','4','5','6')
-                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                    AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                 """, (tps,))
                 nkk = cur.fetchone()[0] or 0
 
@@ -15661,7 +15696,7 @@ class MainWindow(QMainWindow):
                     cur.execute(f"""
                         SELECT COUNT(*) FROM {tbl_name}
                         WHERE TPS=? AND COALESCE(DIS,'')=? 
-                        AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8')
+                        AND COALESCE(KET,'') NOT IN ('1','2','3','4','5','6','7','8','@')
                     """, (tps, kode))
                     return cur.fetchone()[0] or 0
 
@@ -16279,9 +16314,9 @@ class MainWindow(QMainWindow):
             cur.execute(f"""
                 SELECT
                     COUNT(DISTINCT TPS) AS jml_tps,
-                    SUM(CASE WHEN JK='L' AND (KET NOT IN ('1','2','3','4','5','6','7','8') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_laki,
-                    SUM(CASE WHEN JK='P' AND (KET NOT IN ('1','2','3','4','5','6','7','8') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_perempuan,
-                    SUM(CASE WHEN (KET NOT IN ('1','2','3','4','5','6','7','8') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_total
+                    SUM(CASE WHEN JK='L' AND (KET NOT IN ('1','2','3','4','5','6','7','8','@') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_laki,
+                    SUM(CASE WHEN JK='P' AND (KET NOT IN ('1','2','3','4','5','6','7','8','@') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_perempuan,
+                    SUM(CASE WHEN (KET NOT IN ('1','2','3','4','5','6','7','8','@') OR KET IS NULL) THEN 1 ELSE 0 END) AS jml_total
                 FROM {tbl};
             """)
             hasil = cur.fetchone() or (0, 0, 0, 0)
@@ -16380,7 +16415,7 @@ class MainWindow(QMainWindow):
                     SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                         ALAMAT, RT, RW, DIS, KTPel, KET, TPS
                     FROM {tbl}
-                    WHERE KET IS NOT NULL AND KET <> '0' AND TPS=?
+                    WHERE KET IS NOT NULL AND KET <> '0' AND KET <> '@' AND TPS=?
                     ORDER BY RW, RT, NKK, NAMA;
                 """, (tps_filter,))
             else:
@@ -16388,7 +16423,7 @@ class MainWindow(QMainWindow):
                     SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                         ALAMAT, RT, RW, DIS, KTPel, KET, TPS
                     FROM {tbl}
-                    WHERE KET IS NOT NULL AND KET <> '0'
+                    WHERE KET IS NOT NULL AND KET <> '0' AND KET <> '@'
                     ORDER BY TPS, RW, RT, NKK, NAMA;
                 """)
 
@@ -16622,9 +16657,9 @@ class MainWindow(QMainWindow):
             cur.execute(f"""
                 SELECT 
                     CAST(TPS AS TEXT) AS TPS,
-                    SUM(CASE WHEN JK='L' AND KET NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS JumlahL,
-                    SUM(CASE WHEN JK='P' AND KET NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS JumlahP,
-                    SUM(CASE WHEN JK IN ('L','P') AND KET NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS Total
+                    SUM(CASE WHEN JK='L' AND KET NOT IN ('1','2','3','4','5','6','7','8') AND KET NOT LIKE '@%' THEN 1 ELSE 0 END) AS JumlahL,
+                    SUM(CASE WHEN JK='P' AND KET NOT IN ('1','2','3','4','5','6','7','8') AND KET NOT LIKE '@%' THEN 1 ELSE 0 END) AS JumlahP,
+                    SUM(CASE WHEN JK IN ('L','P') AND KET NOT IN ('1','2','3','4','5','6','7','8') AND KET NOT LIKE '@%' THEN 1 ELSE 0 END) AS Total,
                 FROM {tbl}
                 WHERE TPS IS NOT NULL
                 GROUP BY CAST(TPS AS TEXT)
@@ -16717,9 +16752,9 @@ class MainWindow(QMainWindow):
 
 
                 -- === 34–36: AKTIF (bukan KET 1–8)
-                SUM(CASE WHEN TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data34,
-                SUM(CASE WHEN TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data35,
-                SUM(CASE WHEN TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data36,
+                SUM(CASE WHEN TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data34,
+                SUM(CASE WHEN TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data35,
+                SUM(CASE WHEN TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data36,
 
                 -- === 40–42: KET U/u ===
                 SUM(CASE WHEN TRIM(KET) IN ('U','u') AND TRIM(JK)='L' THEN 1 ELSE 0 END) AS data40,
@@ -16729,22 +16764,22 @@ class MainWindow(QMainWindow):
                 -- === 43–45: TOTAL DISABILITAS 1–6 (abaikan KET 1–8) ===
                 SUM(CASE WHEN TRIM(DIS) IN ('1','2','3','4','5','6')
                      AND TRIM(JK)='L'
-                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8')
+                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@')
                      THEN 1 ELSE 0 END) AS data43,
                 SUM(CASE WHEN TRIM(DIS) IN ('1','2','3','4','5','6')
                      AND TRIM(JK)='P'
-                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8')
+                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@')
                      THEN 1 ELSE 0 END) AS data44,
                 SUM(CASE WHEN TRIM(DIS) IN ('1','2','3','4','5','6')
                      AND TRIM(JK) IN ('L','P')
-                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8')
+                     AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@')
                      THEN 1 ELSE 0 END) AS data45,
 
                 -- === 46–63: RINCIAN DISABILITAS 1–6 ===
                 {",".join([
-                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data{46+(i-1)*3},"
-                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data{47+(i-1)*3},"
-                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data{48+(i-1)*3}"
+                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data{46+(i-1)*3},"
+                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data{47+(i-1)*3},"
+                    f"SUM(CASE WHEN TRIM(DIS)='{i}' AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data{48+(i-1)*3}"
                     for i in range(1,7)
                 ])},
 
@@ -16752,17 +16787,17 @@ class MainWindow(QMainWindow):
                 COUNT(DISTINCT TRIM(NKK)) AS data66,
 
                 -- === 67–75: KTPel (B/b & S/s, tanpa KET 1–8)
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data67,
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data68,
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data69,
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data67,
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data68,
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b','S','s') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data69,
 
-                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data70,
-                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data71,
-                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data72,
+                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data70,
+                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data71,
+                SUM(CASE WHEN TRIM(KTPel) IN ('S','s') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data72,
 
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data73,
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data74,
-                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8') THEN 1 ELSE 0 END) AS data75
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK)='L' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data73,
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK)='P' AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data74,
+                SUM(CASE WHEN TRIM(KTPel) IN ('B','b') AND TRIM(JK) IN ('L','P') AND TRIM(KET) NOT IN ('1','2','3','4','5','6','7','8','@') THEN 1 ELSE 0 END) AS data75
 
             FROM {tbl}
             WHERE TRIM(TPS) <> ''
@@ -17011,7 +17046,7 @@ class MainWindow(QMainWindow):
                 SELECT KECAMATAN, DESA, DPID, NKK, NIK, NAMA, TMPT_LHR, TGL_LHR,
                     STS, JK, ALAMAT, RT, RW, DIS, KTPel, KET, SUMBER, TPS, LastUpdate
                 FROM {tbl}
-                WHERE KET <> '0'
+                WHERE KET <> '0' AND KET <> '@'
                 ORDER BY CAST(TPS AS INTEGER), CAST(RW AS INTEGER), CAST(RT AS INTEGER), NKK, NAMA;
             """)
             rows = cur.fetchall()
@@ -17415,6 +17450,19 @@ class UnggahRegulerWindow(QWidget):
                 )
                 return
 
+            # === Hitung jumlah baris Webgrid yang berisi data ===
+            jumlah_data = sum(
+                1 for r in range(self.table.rowCount())
+                if any(
+                    (self.table.item(r, c) and self.table.item(r, c).text().strip())
+                    for c in range(1, self.table.columnCount())
+                )
+            )
+
+            # === Konfirmasi sebelum menyimpan (gaya sama seperti Berita Acara) ===
+            if not konfirmasi_simpan_webgrid(self, tahapan, jumlah_data):
+                return
+
             cur.executescript("""
                 PRAGMA synchronous = OFF;
                 PRAGMA journal_mode = MEMORY;
@@ -17558,7 +17606,7 @@ class UnggahRegulerWindow(QWidget):
                             SELECT COUNT(*) 
                             FROM {tbl_aktif} 
                             WHERE NIK=? 
-                            AND KET NOT IN ('1','2','3','4','5','6','7','8')
+                            AND KET NOT IN ('1','2','3','4','5','6','7','8','@')
                         """, (nik,))
                         if cur.fetchone()[0] > 0:
                             err.append("Terdaftar sebagai NIK Pemilih Aktif")
@@ -17568,7 +17616,7 @@ class UnggahRegulerWindow(QWidget):
                             SELECT DPID 
                             FROM {tbl_aktif} 
                             WHERE NIK=? 
-                            AND KET NOT IN ('1','2','3','4','5','6','7','8')
+                            AND KET NOT IN ('1','2','3','4','5','6','7','8','@')
                         """, (nik,))
                         hasil = cur.fetchall()
                         if hasil:
@@ -17765,6 +17813,17 @@ class UnggahRegulerWindow(QWidget):
     def _close_window(self):
         """Tutup jendela unggah, jalankan freeze_ui, panggil semua fungsi refresh di MainWindow, lalu tampilkan kembali."""
         try:
+            # === Cek apakah masih ada data yang belum disimpan di Webgrid ===
+            ada_data_belum_tersimpan = any(
+                (self.table.item(r, c) and self.table.item(r, c).text().strip())
+                for r in range(self.table.rowCount())
+                for c in range(1, self.table.columnCount())
+            )
+
+            # === Konfirmasi sebelum menutup ===
+            if not konfirmasi_tutup_webgrid(self, ada_data_belum_tersimpan):
+                return
+
             if self.main_window:
                 # === Bekukan UI sementara ===
                 try:
@@ -17776,7 +17835,17 @@ class UnggahRegulerWindow(QWidget):
                         else:
                             print("[UnggahReguler] ⚠️ MainWindow tidak memiliki load_data_from_db().")
 
-                        # === 2️⃣ Jalankan fungsi lanjutan untuk refresh UI tabel ===
+                        # === 2️⃣ Pastikan kembali ke Tab Pemutakhiran Data Pemilih ===
+                        if hasattr(self.main_window, "show_data_page"):
+                            try:
+                                self.main_window.show_data_page()
+                                #print("[UnggahReguler] ✅ Kembali ke Tab Pemutakhiran Data Pemilih.")
+                            except Exception as e:
+                                print(f"[UnggahReguler] ⚠️ Gagal memanggil show_data_page(): {e}")
+                        else:
+                            print("[UnggahReguler] ⚠️ MainWindow tidak memiliki show_data_page().")
+
+                        # === 3️⃣ Jalankan fungsi lanjutan untuk refresh UI tabel ===
                         for fn_name in (
                             "update_pagination",
                             "show_page",
@@ -17785,6 +17854,7 @@ class UnggahRegulerWindow(QWidget):
                             "_warnai_baris_berdasarkan_ket",
                             "_terapkan_warna_ke_tabel_aktif",
                         ):
+                            
                             if hasattr(self.main_window, fn_name):
                                 fn = getattr(self.main_window, fn_name)
                                 try:
@@ -17804,13 +17874,13 @@ class UnggahRegulerWindow(QWidget):
                 except Exception as e:
                     print(f"[UnggahReguler] ⚠️ Gagal menjalankan freeze_ui atau fungsi refresh: {e}")
 
-                # === 3️⃣ Kembalikan jendela utama ke depan ===
+                # === 4️⃣ Kembalikan jendela utama ke depan ===
                 self.main_window.showNormal()
                 self.main_window.showMaximized()
                 self.main_window.raise_()
                 self.main_window.activateWindow()
 
-            # === 4️⃣ Tutup jendela unggah ===
+            # === 5️⃣ Tutup jendela unggah ===
             self.close()
 
         except Exception as e:
@@ -23134,7 +23204,7 @@ class LampAdpp(QMainWindow):
                 SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                     ALAMAT, RT, RW, DIS, KTPel, KET
                 FROM {tbl_name}
-                WHERE KET <> '0' AND TPS = ?
+                WHERE KET <> '0' AND KET <> '@' AND TPS = ?
                 ORDER BY RW, RT, NKK, NAMA;
             """, (tps_filter,))
         else:
@@ -23142,7 +23212,7 @@ class LampAdpp(QMainWindow):
                 SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                     ALAMAT, RT, RW, DIS, KTPel, KET
                 FROM {tbl_name}
-                WHERE KET <> '0'
+                WHERE KET <> '0' AND KET <> '@'
                 ORDER BY TPS, RW, RT, NKK, NAMA;
             """)
 
@@ -23385,7 +23455,7 @@ class LampAdpp(QMainWindow):
                         SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                             ALAMAT, RT, RW, DIS, KTPel, KET
                         FROM {tbl_name}
-                        WHERE KET <> '0' AND TPS = ?
+                        WHERE KET <> '0' AND KET <> '@' AND TPS = ?
                         ORDER BY RW, RT, NKK, NAMA;
                     """, (tps_filter,))
                 else:
@@ -23393,7 +23463,7 @@ class LampAdpp(QMainWindow):
                         SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                             ALAMAT, RT, RW, DIS, KTPel, KET
                         FROM {tbl_name}
-                        WHERE KET <> '0'
+                        WHERE KET <> '0' AND KET <> '@'
                         ORDER BY TPS, RW, RT, NKK, NAMA;
                     """)
 
@@ -23908,7 +23978,7 @@ class LampAdpp(QMainWindow):
             SELECT NKK, NIK, NAMA, TMPT_LHR, TGL_LHR, STS, JK,
                 ALAMAT, RT, RW, DIS, KTPel, KET
             FROM {tbl}
-            WHERE KET <> '0' AND TPS = ?
+            WHERE KET <> '0' AND KET <> '@' AND TPS = ?
             ORDER BY RW, RT, NKK, NAMA;
         """, (tps_filter,))
         rows = cur.fetchall()
@@ -24186,7 +24256,7 @@ class LampAdpp(QMainWindow):
 
             for idx, tps in enumerate(semua_tps, start=1):
                 # cek apakah TPS punya data
-                cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE KET <> '0' AND TPS = ?;", (tps,))
+                cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE KET <> '0' AND KET <> '@' AND TPS = ?;", (tps,))
                 if cur.fetchone()[0] == 0:
                     #dbg(f"⚠️ TPS {tps} dilewati (tidak ada data).")
                     continue
@@ -24259,6 +24329,10 @@ class LampAdpp(QMainWindow):
 
             if total_valid_tps == 0:
                 QMessageBox.warning(self, "Kosong", "Tidak ada TPS yang memiliki data untuk disimpan.")
+                return
+
+            # === Konfirmasi sebelum menyimpan (gaya sama seperti Berita Acara) ===
+            if not konfirmasi_simpan_dokumen(self, tahap, "A-Daftar Perubahan Pemilih", path_file):
                 return
 
             # ======================================================
@@ -24382,7 +24456,7 @@ class LampAdpp(QMainWindow):
                     total_dicetak = 0
 
                     for i, tps in enumerate(semua_tps, start=1):
-                        cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE KET <> '0' AND TPS = ?;", (tps,))
+                        cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE KET <> '0' AND KET <> '@' AND TPS = ?;", (tps,))
                         if cur.fetchone()[0] == 0:
                             continue
 
@@ -25197,6 +25271,10 @@ class LampArpp(QMainWindow):
             nama_file = f"Model A-RPP {tahap} {self.label_wilayah.title()} {desa} {waktu_str}.pdf"
             path_file = os.path.join(base_dir, nama_file)
 
+            # === Konfirmasi sebelum menyimpan (gaya sama seperti Berita Acara) ===
+            if not konfirmasi_simpan_dokumen(self, tahap, "A-Rekap Perubahan Pemilih", path_file):
+                return
+
             # === 5️⃣ Simpan PDF ke file ===
             with open(path_file, "wb") as f:
                 f.write(data)
@@ -25791,6 +25869,11 @@ class LampRekapPps(QMainWindow):
             os.makedirs(base_dir, exist_ok=True)
             waktu_str = datetime.datetime.now().strftime("%d-%m-%Y %H.%M")
             path_file = os.path.join(base_dir, f"Model A-Rekap PPS {tahap} {self.label_wilayah.title()} {desa} {waktu_str}.pdf")
+
+            # === Konfirmasi sebelum menyimpan (gaya sama seperti Berita Acara) ===
+            if not konfirmasi_simpan_dokumen(self, tahap, "A-Rekap PPS", path_file):
+                return
+
             with open(path_file, "wb") as f:
                 f.write(data)
             QMessageBox.information(self, "Berhasil", f"PDF berhasil disimpan:\n{path_file}")
@@ -26821,6 +26904,10 @@ class LapCoklit(QMainWindow):
 
             waktu_str = datetime.datetime.now().strftime("%d%m%Y %H.%M")
             path_file = os.path.join(base_dir, f"Laporan Hasil Coklit {self.label_wilayah.title()} {desa} {waktu_str}.pdf")
+
+            # === Konfirmasi sebelum menyimpan (gaya sama seperti Berita Acara) ===
+            if not konfirmasi_simpan_dokumen(self, tahap, "Laporan Hasil Coklit", path_file):
+                return
 
             # === 5️⃣ Simpan file PDF ===
             data = buf.data()
