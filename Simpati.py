@@ -43,6 +43,14 @@ from io import BytesIO
 import pyotp, qrcode
 #import datetime  # jika ada kode yang memakai gaya: datetime.date.today()
 
+# ===================== ByPass Login DEV =====================
+# ⚠️ DEV ONLY — bypass login
+# Set True untuk skip login+OTP saat development.
+# WAJIB set False lagi sebelum build/rilis ke produksi!
+
+DEV_BYPASS_LOGIN = True
+# ===================== ByPass Login DEV =====================
+
 from about_dialog import show_about_dialog
 
 # =========================
@@ -5086,6 +5094,27 @@ class LoginWindow(QMainWindow):
         email = self.email_input.text().strip()
         pw = self.pass_input.text().strip()
         tahapan = self.tahapan_combo.currentText()
+
+# ===================== ByPass Login DEV =====================
+        if DEV_BYPASS_LOGIN:
+            from db_manager import with_safe_db
+
+            @with_safe_db
+            def _ambil_user_dev(*, conn=None):
+                cur = conn.cursor()
+                cur.execute("SELECT nama, kabupaten, kecamatan, desa FROM users LIMIT 1")
+                return cur.fetchone()
+
+            row = _ambil_user_dev()
+            if row:
+                nama, kabupaten, kecamatan, desa = row
+            else:
+                nama, kabupaten, kecamatan, desa = "Dev User", "-", "-", "-"
+
+            tahapan_dev = tahapan if tahapan != "-- Pilih Tahapan --" else "DPHP"
+            self.accept_login(nama, kabupaten, kecamatan, desa, tahapan_dev)
+            return
+# ===================== ByPass Login DEV =====================
 
         # ============================================================
         # 🌫️ Helper overlay blur khas SIMPATI
