@@ -416,6 +416,136 @@ def _lighten_color(hex_color):
     lighter = QColor.fromHsv(h, s, v, a)
     return lighter.name()
 
+# =====================================================
+# Helper transisi window modern: blur latar + fade masuk/keluar
+# =====================================================
+def _apply_focus_blur(widget, radius=16, duration=260):
+    """Blur + redup latar (mis. MainWindow) saat window lain jadi fokus di atasnya."""
+    if widget is None:
+        return
+    effect = QGraphicsBlurEffect(widget)
+    effect.setBlurRadius(0)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"blurRadius", widget)
+    anim.setDuration(duration)
+    anim.setStartValue(0)
+    anim.setEndValue(radius)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    widget._focus_blur_effect = effect
+    widget._focus_blur_anim = anim
+    anim.start()
+
+
+def _remove_focus_blur(widget, duration=220):
+    """Hilangkan blur dari latar secara halus (animasi mengecil ke 0)."""
+    if widget is None:
+        return
+    effect = getattr(widget, "_focus_blur_effect", None)
+    if effect is None:
+        widget.setGraphicsEffect(None)
+        return
+    anim = QPropertyAnimation(effect, b"blurRadius", widget)
+    anim.setDuration(duration)
+    anim.setStartValue(effect.blurRadius())
+    anim.setEndValue(0)
+    anim.setEasingCurve(QEasingCurve.Type.InCubic)
+
+    def _done():
+        widget.setGraphicsEffect(None)
+        widget._focus_blur_effect = None
+
+    anim.finished.connect(_done)
+    widget._focus_blur_anim = anim
+    anim.start()
+
+def _is_source_item_enabled(self, index):
+    model = self.model()
+    idx = model.index(index, self.modelColumn(), self.rootModelIndex())
+    return bool(idx.flags() & Qt.ItemFlag.ItemIsEnabled)
+
+class LoginTransitionOverlay(QWidget):
+    """Layar transisi setelah OTP berhasil: hanya ring progres 0–100%, tanpa teks."""
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet("background-color: #fafafa;")
+        self._progress = 0.0
+        self._progress_anim = None
+
+        screen = QApplication.primaryScreen()
+        if screen:
+            self.setGeometry(screen.geometry())
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        radius = 34
+        cx, cy = self.width() / 2, self.height() / 2
+        rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
+
+        # Ring latar — merah marun pudar
+        pen_bg = QPen(QColor("#e8caca"), 7)
+        pen_bg.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_bg)
+        painter.drawEllipse(rect)
+
+        # Ring progres — oranye khas SIMPATI, mulai dari jam 12 searah jarum jam
+        pen_fg = QPen(QColor("#ff6600"), 7)
+        pen_fg.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_fg)
+        span_angle = int(-(self._progress / 100.0) * 360 * 16)
+        painter.drawArc(rect, 90 * 16, span_angle)
+        painter.end()
+
+    def animate_progress_to(self, target, duration=250):
+        if self._progress_anim is not None:
+            self._progress_anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setStartValue(float(self._progress))
+        anim.setEndValue(float(target))
+        anim.setDuration(duration)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _apply(val):
+            self._progress = float(val)
+            self.update()
+
+        anim.valueChanged.connect(_apply)
+        anim.start()
+        self._progress_anim = anim
+
+    def fade_in(self, duration=220):
+        self.show()
+        self.raise_()
+        self._anim_in = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._anim_in.setDuration(duration)
+        self._anim_in.setStartValue(0.0)
+        self._anim_in.setEndValue(1.0)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_in.start()
+
+    def fade_out_and_close(self, duration=220, on_finished=None):
+        self.animate_progress_to(100, 150)
+        self._anim_out = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._anim_out.setDuration(duration)
+        self._anim_out.setStartValue(self._opacity_effect.opacity())
+        self._anim_out.setEndValue(0.0)
+        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        def _done():
+            self.close()
+            self.deleteLater()
+            if on_finished:
+                on_finished()
+
+        self._anim_out.finished.connect(_done)
+        self._anim_out.start()
+
 class ModernMessage(QDialog):
     def __init__(self, title, message, icon_type="info", parent=None):
         super().__init__(parent)
@@ -989,12 +1119,6 @@ class CustomComboBox(QComboBox):
         self._arrow_anim: QVariantAnimation | None = None
         self._scrollable_popup = False
         self._scrollable_popup_items = 8
-
-        # Popup KUSTOM. Popup bawaan QComboBox tidak bisa dipaksa
-        # membatasi tingginya sendiri kalau jumlah item banyak (frame
-        # popup-nya tetap dihitung berdasarkan SEMUA item oleh Qt,
-        # bukan cuma yang kelihatan) — makanya dibuat sendiri di sini
-        # pakai QListWidget biasa yang scroll-nya normal & terkontrol.
         self._popup_frame = None
         self._popup_list = None
 
@@ -1045,7 +1169,7 @@ class CustomComboBox(QComboBox):
 
     def _on_popup_item_clicked(self, item):
         if not (item.flags() & Qt.ItemFlag.ItemIsEnabled):
-            return  # abaikan klik pada item yang sedang di-grayscale
+           return  # abaikan klik pada item yang sedang di-grayscale
         idx = item.data(Qt.ItemDataRole.UserRole)
         if idx is not None:
             self.setCurrentIndex(int(idx))
@@ -1095,8 +1219,14 @@ class CustomComboBox(QComboBox):
             self._popup_list.setCurrentRow(cur)
 
         # Posisi popup mengikuti posisi combobox di layar
-        below_point = self.mapToGlobal(self.rect().bottomLeft())
-        above_point = self.mapToGlobal(self.rect().topLeft())
+        combo_left = self.mapToGlobal(self.rect().topLeft())
+        if popup_width > self.width():
+            x_align = combo_left.x() + self.width() - int(popup_width)
+        else:   
+            x_align = combo_left.x()
+
+        below_point = QPoint(x_align, self.mapToGlobal(self.rect().bottomLeft()).y())
+        above_point = QPoint(x_align, combo_left.y())
         screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
         target_point = below_point
         bottom_margin = 2  # jarak aman dari tepi bawah (status bar "SIMPATI v1.1")
@@ -2609,9 +2739,9 @@ class FilterSidebar(QWidget):
     # (atribut combo, kolom DB, key di get_filters(), label placeholder, peta kode->label)
     _CASCADE_FIELDS = [
         ("keterangan", "KET", "keterangan", "Keterangan", {
-            "1": "1 (Meninggal)", "2": "2 (Ganda)", "3": "3 (Di Bawah Umur)",
+            "0": "0 (Pemilih Sesuai)", "B": "B (Pemilih Baru)", "1": "1 (Meninggal)", "2": "2 (Ganda)", "3": "3 (Di Bawah Umur)",
             "4": "4 (Pindah Domisili)", "5": "5 (WNA)", "6": "6 (TNI)",
-            "7": "7 (Polri)", "8": "8 (Salah TPS)", "U": "U (Ubah)",
+            "7": "7 (Polri)", "8": "8 (Salah Penempatan TPS)", "U": "U (Perbaikan Data)",
         }),
         ("kelamin", "JK", "jk", "Kelamin", None),
         ("kawin", "STS", "sts", "Kawin", None),
@@ -3309,6 +3439,10 @@ class ComboBoxSunting(QComboBox):
         self._popup_open = False
         self._arrow_angle = 0.0
         self._arrow_anim = None
+        self._scrollable_popup = False
+        self._scrollable_popup_items = 8
+        self._popup_frame = None
+        self._popup_list = None
         
         # === TAMBAHAN UNTUK DESCRIPTION MODE ===
         self._description_mode = False
@@ -3317,6 +3451,10 @@ class ComboBoxSunting(QComboBox):
         self._locked_value = None  # Nilai yang terkunci (tidak ada di dropdown tapi tetap tampil)
         
         self._update_stylesheet()
+
+    def setScrollablePopup(self, enabled=True, max_items=8):
+        self._scrollable_popup = enabled
+        self._scrollable_popup_items = max_items
 
     def setDescriptionMode(self, enabled=True, mapping=None, locked_value=None):
         """
@@ -3423,133 +3561,167 @@ class ComboBoxSunting(QComboBox):
         
         self.update()
 
+    def _ensure_popup_widgets(self):
+        if self._popup_frame is not None:
+            return
+        self._popup_frame = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._popup_frame.setObjectName("comboSuntingPopupFrame")
+
+        outer = QVBoxLayout(self._popup_frame)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(0)
+
+        self._popup_list = QListWidget(self._popup_frame)
+        self._popup_list.setFrameShape(QFrame.Shape.NoFrame)
+        self._popup_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._popup_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._popup_list.setUniformItemSizes(True)
+        outer.addWidget(self._popup_list)
+        self._popup_list.itemClicked.connect(self._on_popup_item_clicked)
+
+    def _apply_popup_style(self):
+        if self.theme_mode == 'dark':
+            popup_bg = "#1F2937"
+            border_color = "#4B5563"
+            text_color = "#F3F4F6"
+        else:
+            popup_bg = "#ffffff"
+            border_color = "#bbb"
+            text_color = "#111827"
+
+        self._popup_frame.setStyleSheet(f"""
+            QFrame#comboSuntingPopupFrame {{
+                background: {popup_bg};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+        """)
+        self._popup_list.setStyleSheet(f"""
+            QListWidget {{ border: none; outline: 0; background: {popup_bg}; color: {text_color}; }}
+            QListWidget::item {{ padding: 6px 10px; border-radius: 5px; margin: 1px 2px; }}
+            QListWidget::item:hover {{ background: #ff9800; color: #ffffff; }}
+            QListWidget::item:selected {{ background: #ff9800; color: #ffffff; }}
+            QScrollBar:vertical {{
+                background: #f3f4f6; width: 7px; margin: 3px 2px 3px 0px; border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical {{ background: #b9bec7; min-height: 28px; border-radius: 3px; }}
+            QScrollBar::handle:vertical:hover {{ background: #ff8800; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; border: none; background: transparent; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        """)
+
+    def _on_popup_item_clicked(self, item):
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is not None:
+            self.setCurrentIndex(int(idx))
+        self.hidePopup()
+
+    def _is_source_item_enabled(self, index):
+        model = self.model()
+        model_item = model.item(index) if hasattr(model, "item") else None
+        return model_item.isEnabled() if model_item is not None else True
+
     def showPopup(self):
         # Jika sedang menampilkan locked value, reset dulu
         if hasattr(self, '_current_locked_code') and self._current_locked_code:
             self._current_locked_code = None
 
-        view = self.view()
+        self._ensure_popup_widgets()
+        self._apply_popup_style()
 
-        if view is None:
-            super().showPopup()
-            self._popup_open = True
-            self._animate_arrow(True)
-            self.update()
-            return
-
-        # =========================================================
-        # Jika combo ini menggunakan popup scrollable,
-        # batasi jumlah item yang terlihat.
-        # Qt akan otomatis membuat scrollbar jika item lebih banyak.
-        # =========================================================
-        if self._scrollable_popup:
-            self.setMaxVisibleItems(self._scrollable_popup_items)
-
-            view.setVerticalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAsNeeded
-            )
-
-            view.setUniformItemSizes(True)
-
-            # Scrollbar modern
-            view.verticalScrollBar().setStyleSheet("""
-                QScrollBar:vertical {
-                    background: transparent;
-                    width: 7px;
-                    margin: 2px 2px 2px 0px;
-                    border: none;
-                }
-
-                QScrollBar::handle:vertical {
-                    background: #B8BEC7;
-                    min-height: 28px;
-                    border-radius: 3px;
-                }
-
-                QScrollBar::handle:vertical:hover {
-                    background: #FF8800;
-                }
-
-                QScrollBar::add-line:vertical,
-                QScrollBar::sub-line:vertical {
-                    height: 0px;
-                    border: none;
-                    background: transparent;
-                }
-
-                QScrollBar::add-page:vertical,
-                QScrollBar::sub-page:vertical {
-                    background: transparent;
-                }
-            """)
+        self._popup_list.clear()
+        for i in range(self.count()):
+            item = QListWidgetItem(self.itemText(i))
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            if not self._is_source_item_enabled(i):
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+            self._popup_list.addItem(item)
 
         # =========================================================
         # Hitung lebar popup berdasarkan isi
         # =========================================================
         try:
-            fm = view.fontMetrics()
-
+            fm = self._popup_list.fontMetrics()
             max_text_width = max(
-                (
-                    fm.horizontalAdvance(self.itemText(i))
-                    for i in range(self.count())
-                ),
+                (fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())),
                 default=0
             )
-
-            padding = 56
-
-            popup_width = max(
-                self.width(),
-                min(
-                    max_text_width + padding,
-                    self._max_popup_width
-                )
-            )
-
-            view.setMinimumWidth(int(popup_width))
-            view.setTextElideMode(
-                Qt.TextElideMode.ElideNone
-            )
-
+            popup_width = max(self.width(), min(max_text_width + 56, self._max_popup_width))
         except Exception as e:
             print(f"[showPopup width calc Error] {e}")
-            view.setMinimumWidth(self.width())
+            popup_width = self.width()
 
         # =========================================================
-        # Buka popup
+        # Batasi tinggi popup (mendukung scrollable_popup)
         # =========================================================
-        super().showPopup()
+        max_visible = self._scrollable_popup_items if self._scrollable_popup else 8
+        row_height = self._popup_list.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = 32
+        visible_count = min(self.count(), max_visible) if self.count() > 0 else 1
+        popup_height = row_height * visible_count + 10
+
+        self._popup_frame.setFixedWidth(int(popup_width))
+        self._popup_frame.setFixedHeight(int(popup_height) + 8)
+        self._popup_list.setFixedHeight(int(popup_height))
+
+        cur = self.currentIndex()
+        if 0 <= cur < self._popup_list.count():
+            self._popup_list.setCurrentRow(cur)
 
         # =========================================================
-        # Pastikan popup tepat di bawah ComboBox
+        # Posisikan popup tepat di bawah ComboBox
         # =========================================================
-        try:
-            bottom_left = QPoint(0, self.height())
-            global_pos = self.mapToGlobal(bottom_left)
+        combo_left = self.mapToGlobal(self.rect().topLeft())
+        if popup_width > self.width():
+            x_align = combo_left.x() + self.width() - int(popup_width)
+        else:
+            x_align = combo_left.x()
 
-            popup_window = view.window()
+        below_point = QPoint(x_align, self.mapToGlobal(self.rect().bottomLeft()).y())
+        above_point = QPoint(x_align, combo_left.y())
+        screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
+        target_point = below_point
+        bottom_margin = 2  # jarak aman dari tepi bawah (status bar "SIMPATI v1.1")
 
-            if popup_window:
-                popup_window.move(global_pos)
+        if screen is not None:
+            avail = screen.availableGeometry()
+            total_h = self._popup_frame.height()
+            space_below = avail.bottom() - bottom_margin - below_point.y()
+            space_above = above_point.y() - avail.top()
+            move_up = False
+            if self._popup_direction_mode == 'up':
+                move_up = space_above >= total_h
+            elif self._popup_direction_mode == 'auto':
+                move_up = space_below < total_h and space_above > space_below
 
-        except Exception as e:
-            print(f"[showPopup move Error] {e}")
+            if move_up:
+                target_point = QPoint(above_point.x(), above_point.y() - total_h)
 
-        # =========================================================
-        # Status dan animasi
-        # =========================================================
+            # Kalau masih kepotong di bawah, geser naik secukupnya saja
+            # (bukan lompat total ke atas combobox seperti mode 'up'/'auto').
+            max_y = avail.bottom() - bottom_margin - total_h
+            if target_point.y() > max_y:
+                target_point = QPoint(target_point.x(), max(max_y, avail.top()))
+
+            x = min(target_point.x(), avail.right() - self._popup_frame.width())
+            x = max(x, avail.left())
+            target_point = QPoint(x, target_point.y())
+
+        self._popup_frame.move(target_point)
+        self._popup_frame.show()
+        self._popup_frame.raise_()
+
         self._popup_open = True
         self._animate_arrow(True)
         self.update()
 
     def hidePopup(self):
-        try:
-            super().hidePopup()
-        finally:
-            self._popup_open = False
-            self._animate_arrow(False)
-            self.update()
+        if self._popup_frame is not None:
+            self._popup_frame.hide()
+        self._popup_open = False
+        self._animate_arrow(False)
+        self.update()
 
     def _animate_arrow(self, opening: bool):
         start = self._arrow_angle
@@ -3704,6 +3876,7 @@ class FloatingLabelComboBox(QWidget):
         self.label.setStyleSheet(self.label_stylesheet_light)
 
         self.combo = ComboBoxSunting()
+        self.combo.setScrollablePopup(True, max_items=8)
         
         # Setup berdasarkan mode
         if description_mode and mapping:
@@ -3752,7 +3925,7 @@ class DetailInformasiPemilihDialog(QDialog):
         # ============================================================
         self.ket_mapping = {
             "0": "0",
-            "U": "U (Ubah Data)",
+            "U": "U (Perbaikan Data Pemilih)",
             "1": "1 (Meninggal)",
             "2": "2 (Ganda)",
             "3": "3 (Di Bawah Umur)",
@@ -3764,7 +3937,7 @@ class DetailInformasiPemilihDialog(QDialog):
 
         # ✅ Tambahkan hanya bila tahapan = DPHP
         if tahapan_aktif == "DPHP":
-            self.ket_mapping["8"] = "8 (Salah TPS)"
+            self.ket_mapping["8"] = "8 (Salah Penempatan TPS)"
 
         # ============================================================
         # 🔹 Mapping dropdown Disabilitas (tetap sama)
@@ -5168,7 +5341,7 @@ class LoginWindow(QMainWindow):
                 return
 
             totp = pyotp.TOTP(otp_secret)
-            if not totp.verify(code):
+            if not totp.verify(code, valid_window=1):
                 overlay_err = buat_overlay(16)
                 show_modern_error(otp_dialog, "Gagal", "Kode OTP salah atau sudah kedaluwarsa!")
                 hapus_overlay(overlay_err)
@@ -5375,7 +5548,17 @@ class LoginWindow(QMainWindow):
 
     # === Masuk ke MainWindow ===
     def accept_login(self, nama, kabupaten, kecamatan, desa, tahapan):
-        """Masuk ke halaman utama setelah login sukses."""
+        """Masuk ke halaman utama setelah login sukses — dengan transisi animasi modern."""
+        self._login_transition = LoginTransitionOverlay()
+        self._login_transition.fade_in(220)
+        self._login_transition.animate_progress_to(30, 250)
+
+        # Beri jeda sedikit supaya overlay sempat tampil & animasi mulai
+        # berputar dulu, sebelum proses berat (setup DB + buka MainWindow)
+        # dijalankan — biar transisinya kelihatan mulus, bukan cuma kedip.
+        QTimer.singleShot(180, lambda: self._do_accept_login_work(nama, kabupaten, kecamatan, desa, tahapan))
+
+    def _do_accept_login_work(self, nama, kabupaten, kecamatan, desa, tahapan):
         tahapan = tahapan.upper()
 
         # ✅ Pastikan koneksi database aktif (gunakan koneksi global)
@@ -5439,6 +5622,8 @@ class LoginWindow(QMainWindow):
 
         # === Tampilkan jendela utama ===
         try:
+            self._login_transition.animate_progress_to(75, 220)
+
             self.main_window = MainWindow(
                 nama.upper(),
                 kabupaten.upper(),
@@ -5447,10 +5632,29 @@ class LoginWindow(QMainWindow):
                 str(DB_PATH),
                 tahapan.upper()
             )
+
+            # MainWindow disiapkan transparan dulu, baru di-fade-in
+            # bersamaan dengan overlay yang fade-out — supaya transisinya
+            # menyatu (crossfade), bukan cuma "hilang lalu muncul".
+            mw_opacity = QGraphicsOpacityEffect(self.main_window)
+            mw_opacity.setOpacity(0.0)
+            self.main_window.setGraphicsEffect(mw_opacity)
             self.main_window.show()
+
+            def _reveal_main_window():
+                anim = QPropertyAnimation(mw_opacity, b"opacity", self.main_window)
+                anim.setDuration(320)
+                anim.setStartValue(0.0)
+                anim.setEndValue(1.0)
+                anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+                anim.finished.connect(lambda: self.main_window.setGraphicsEffect(None))
+                self.main_window._fade_in_anim = anim  # tahan referensi agar tidak digarbage-collect
+                anim.start()
 
             # ✅ Tunda sedikit agar fullscreen dan tabel stabil
             QTimer.singleShot(30, self.main_window.showMaximized)
+            QTimer.singleShot(60, _reveal_main_window)
+            QTimer.singleShot(80, lambda: self._login_transition.fade_out_and_close(260))
 
             # Setup kolom setelah tabel siap
             QTimer.singleShot(200, self._setup_column_widths_after_login)
@@ -5458,11 +5662,12 @@ class LoginWindow(QMainWindow):
             # Sembunyikan kolom sensitif sedikit setelahnya
             QTimer.singleShot(230, self._hide_sensitive_columns_after_login)
 
-
             # ✅ Tutup login window
             self.close()
 
         except Exception as e:
+            if hasattr(self, "_login_transition") and self._login_transition:
+                self._login_transition.fade_out_and_close(150)
             show_modern_error(self, "Error", f"Gagal membuka halaman utama:\n{e}")
 
     def _hide_sensitive_columns_after_login(self):
@@ -5784,7 +5989,7 @@ class ResetPasswordDialog(QDialog):
             otp_secret = row[0]
             import pyotp
             totp = pyotp.TOTP(otp_secret)
-            if not totp.verify(otp_code):
+            if not totp.verify(otp_code, valid_window=1):
                 pop_with_overlay(show_modern_error, self, "Gagal", "Kode OTP salah atau sudah kedaluwarsa.")
                 return
 
@@ -5942,6 +6147,7 @@ class BackupWorker(QThread):
             ts = now.strftime("%d%m%Y %H%M")
             backup_name = f"SIMPATI_BackUp {ts}{BACKUP_EXT}"
             backup_path = BACKUP_DIR / backup_name
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(backup_path, "wb") as f:
                 f.write(BACKUP_MAGIC)
@@ -5988,7 +6194,7 @@ def backup_simpati(parent=None):
         show_modern_warning(parent, "Dibatalkan", "Backup dibatalkan — OTP kosong.")
         return
     totp = pyotp.TOTP(otp_secret)
-    if not totp.verify(code.strip()):
+    if not totp.verify(code.strip(), valid_window=1):
         show_modern_error(parent, "OTP Salah", "Kode OTP tidak valid atau kedaluwarsa.")
         return
 
@@ -7210,7 +7416,10 @@ class SidalihSyncWorker(QThread):
                         val = raw_value(row, column_indices[col])
                         if val is None:
                             val = ""
-                        data[col] = str(val).strip().upper()
+                        val = str(val).strip().upper()
+                        if col in ("RT", "RW") and val.isdigit():
+                            val = str(int(val))
+                        data[col] = val
                     else:
                         data[col] = ""
 
@@ -8900,10 +9109,14 @@ class MainWindow(QMainWindow):
 
 
     def show_setting_dialog(self):
+        _apply_focus_blur(self, radius=14, duration=220)
         dlg = SettingDialog(self)
-        if dlg.exec():
-            self.apply_column_visibility()
-            self.auto_fit_columns()
+        try:
+            if dlg.exec():
+                self.apply_column_visibility()
+                self.auto_fit_columns()
+        finally:
+            _remove_focus_blur(self, duration=200)
 
     def zoom_table_font(self, delta: int):
         """Perbesar/perkecil font tabel. delta: +1 zoom in, -1 zoom out, 0 reset."""
@@ -9159,7 +9372,11 @@ class MainWindow(QMainWindow):
                 main_window_ref=self, 
                 parent=self
             )
-            dialog.exec()
+            _apply_focus_blur(self, radius=14, duration=220)
+            try:
+                dialog.exec()
+            finally:
+                _remove_focus_blur(self, duration=200)
         except Exception as e:
             print(f"[on_row_double_clicked] {e}")
 
@@ -10377,7 +10594,7 @@ class MainWindow(QMainWindow):
                 self.extra_labels[key].setText(f"{val:,}".replace(",", "."))
 
         # === Update bar chart ===
-        total_safe = max(stats["total"], 1)
+        total_bars_safe = max(sum(stats["bars"].values()), 1)
 
         def _set_bar_stretch(ref, stretch_0_100: int):
             inner = ref["inner"]
@@ -10404,10 +10621,18 @@ class MainWindow(QMainWindow):
             if key in self.bar_labels:
                 ref = self.bar_labels[key]
                 ref["value"].setText(f"{val:,}".replace(",", "."))
-                stretch = int((val / total_safe) * 100)
+                stretch = int((val / total_bars_safe) * 100 * 1.3)
                 stretch = max(5, min(stretch, 95))
                 if ref["inner"] and ref["fg"]:
                     _set_bar_stretch(ref, stretch)
+
+        # === Update stretch bar Total TMS ===
+        if "Total TMS" in self.bar_labels:
+            ref_tms = self.bar_labels["Total TMS"]
+            stretch_tms = int((stats["total_tms"] / total_bars_safe) * 100 * 1.3)
+            stretch_tms = max(5, min(stretch_tms, 95))
+            if ref_tms.get("inner") and ref_tms.get("fg"):
+                _set_bar_stretch(ref_tms, stretch_tms)
 
         # === Update pie chart (donut) ===
         total = max(stats["total"], 1)
@@ -13458,7 +13683,7 @@ class MainWindow(QMainWindow):
 
                 totp = pyotp.TOTP(otp_secret)
 
-                if not totp.verify(code):
+                if not totp.verify(code, valid_window=1):
 
                     show_modern_error(
                         otp_dialog,
@@ -13885,7 +14110,7 @@ class MainWindow(QMainWindow):
                     return
 
                 totp = pyotp.TOTP(otp_secret)
-                if not totp.verify(code):
+                if not totp.verify(code, valid_window=1):
                     show_modern_error(otp_dialog, "Gagal", "Kode OTP salah atau sudah kedaluwarsa!")
                     shake_widget(otp_input)
                     otp_input.setFocus()
@@ -15110,7 +15335,7 @@ class MainWindow(QMainWindow):
 
                 # === Verifikasi dengan pyotp ===
                 totp = pyotp.TOTP(otp_secret)
-                if not totp.verify(code):
+                if not totp.verify(code, valid_window=1):
                     overlay_err = self.buat_overlay(16)
                     show_modern_error(otp_dialog, "Gagal", "Kode OTP salah atau sudah kedaluwarsa!")
                     self.hapus_overlay(overlay_err)
@@ -17567,10 +17792,9 @@ class ComboDelegate(QStyledItemDelegate):
         self.options = options
 
     def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
+        combo = CustomComboBox(parent)
         combo.addItems([""] + self.options)
         combo.setEditable(False)
-        combo.setStyleSheet("QComboBox{background:#fff;border:1px solid #ccc;border-radius:4px;padding:2px 4px;}")
         return combo
 
     def setEditorData(self, editor, index):
