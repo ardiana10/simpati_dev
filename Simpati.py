@@ -6034,12 +6034,84 @@ class ResetPasswordDialog(QDialog):
             pop_with_overlay(show_modern_error, self, "Error", f"Terjadi kesalahan:\n{e}")
 
 
+# =========================================================
+# 🔒 PRIVASI TAMPILAN (NKK / NIK / TGL_LHR)
+# ---------------------------------------------------------
+# Penyamaran HANYA di lapisan tampilan (delegate). Isi asli
+# QTableWidgetItem tidak diubah sama sekali, sehingga:
+#   - pencarian / filter sidebar (query ke database) tetap normal
+#   - dialog detail pemilih (dobel klik) tetap membaca nilai asli
+#   - ekspor, sunting, dan validasi tidak terpengaruh
+# =========================================================
+PRIVACY_MASK_CHAR = "*"
+
+# Posisi karakter (1-based) yang disamarkan.
+PRIVACY_POS_NKK_NIK = tuple(range(7, 13))   # digit ke-7 s/d ke-12  → 320612******7890
+PRIVACY_POS_TANGGAL = (2, 4, 5)             # pada format dd|mm|yyyy → 1*|**|1945
+
+# Jeda tanpa aktivitas sebelum tampilan kembali disamarkan (milidetik)
+PRIVACY_IDLE_MS = 15000
+
+
+def mask_privacy_text(text, kind: str) -> str:
+    """Kembalikan versi berbintang dari sebuah nilai. Separator ('|', '/', '-') dilewati."""
+    s = "" if text is None else str(text)
+    if not s.strip():
+        return s
+
+    positions = PRIVACY_POS_TANGGAL if kind == "TGL_LHR" else PRIVACY_POS_NKK_NIK
+    chars = list(s)
+    for p in positions:
+        i = p - 1
+        if 0 <= i < len(chars) and chars[i].isdigit():
+            chars[i] = PRIVACY_MASK_CHAR
+    return "".join(chars)
+
+
+class PrivacyActivityWatcher(QObject):
+    """Pantau aktivitas pengguna (mouse/keyboard) untuk me-reset timer idle privasi."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        self._types = {
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseMove,
+            QEvent.Type.Wheel,
+            QEvent.Type.KeyPress,
+            QEvent.Type.TouchBegin,
+            QEvent.Type.TouchUpdate,
+        }
+
+    def eventFilter(self, obj, event):
+        try:
+            if event.type() in self._types:
+                self._window._restart_privacy_idle_timer()
+        except Exception:
+            pass
+        return False  # jangan pernah menelan event
+
+
 class HoverDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.hovered_row = -1
         parent.viewport().installEventFilter(self)
         self.parent = parent  # jangan installEventFilter ke parent utama lagi!
+
+        # 🔒 Konfigurasi privasi (diisi oleh MainWindow)
+        self.mask_enabled = True
+        self.mask_columns = {}   # {index_kolom: "NKK" | "NIK" | "TGL_LHR"}
+
+    def initStyleOption(self, option, index):
+        """Ganti TEKS YANG DIGAMBAR saja; data asli di model tidak disentuh."""
+        super().initStyleOption(option, index)
+        if not self.mask_enabled or not self.mask_columns:
+            return
+        kind = self.mask_columns.get(index.column())
+        if kind:
+            option.text = mask_privacy_text(option.text, kind)
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.MouseMove:
@@ -8135,6 +8207,14 @@ class MainWindow(QMainWindow):
             import_ecoklit_menu.addAction(action_import_ubah)
 
 
+        # === Tombol Privasi (samarkan / tampilkan NKK, NIK, TGL_LHR) ===
+        self.btn_privacy = QPushButton("Privasi")
+        self.style_button(self.btn_privacy, width=92, bg="#d71d1d", fg="white", bold=True)
+        self.btn_privacy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_privacy.clicked.connect(self.toggle_privacy_mask)
+        self.toolbar.addWidget(self.btn_privacy)
+        add_spacer()
+
         # === Tombol Rekap (QToolButton, tapi tampil identik dengan QPushButton) ===
         btn_rekap = QToolButton()
         btn_rekap.setText(" Rekap ")
@@ -8416,6 +8496,17 @@ class MainWindow(QMainWindow):
         self.table.setItemDelegateForColumn(0, self.checkbox_delegate)
         for c in range(1, len(columns)):
             self.table.setItemDelegateForColumn(c, self.hover_delegate)
+
+        # === 🔒 Privasi tampilan: NKK, NIK, TGL_LHR berbintang secara default ===
+        self.hover_delegate.mask_columns = {
+            columns.index("NKK"): "NKK",
+            columns.index("NIK"): "NIK",
+            columns.index("TGL_LHR"): "TGL_LHR",
+        }
+        self.privacy_masked = True
+        self.hover_delegate.mask_enabled = True
+        self._setup_privacy_idle_timer()
+        self._update_privacy_button()
 
         # === Context Menu
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -9350,6 +9441,75 @@ class MainWindow(QMainWindow):
         btn.setStyleSheet(style)
         return btn
     
+    # =========================================================
+    # 🔒 PRIVASI TAMPILAN (NKK / NIK / TGL_LHR)
+    # =========================================================
+    def _update_privacy_button(self):
+        """Selaraskan label & tooltip tombol privasi dengan status sekarang."""
+        btn = getattr(self, "btn_privacy", None)
+        if btn is None:
+            return
+        if getattr(self, "privacy_masked", True):
+            btn.setText("Privasi ON")
+            btn.setToolTip("NKK, NIK, dan Tanggal Lahir sedang disamarkan.\n"
+                           "Klik untuk menampilkan data secara utuh.")
+        else:
+            detik = int(PRIVACY_IDLE_MS / 1000)
+            btn.setText("Privasi OFF")
+            btn.setToolTip(f"Data tampil utuh. Akan otomatis disamarkan kembali\n"
+                           f"setelah {detik} detik tanpa aktivitas.")
+
+    def set_privacy_masked(self, masked: bool):
+        """Aktif/nonaktifkan penyamaran tampilan. Data asli tidak pernah diubah."""
+        self.privacy_masked = bool(masked)
+
+        delegate = getattr(self, "hover_delegate", None)
+        if delegate is not None:
+            delegate.mask_enabled = self.privacy_masked
+
+        try:
+            self.table.viewport().update()
+        except Exception:
+            pass
+
+        self._update_privacy_button()
+
+        timer = getattr(self, "_privacy_idle_timer", None)
+        if timer is not None:
+            if self.privacy_masked:
+                timer.stop()          # sudah aman, tak perlu hitung mundur
+            else:
+                timer.start()         # mulai hitung mundur idle
+
+    def toggle_privacy_mask(self):
+        """Handler tombol Privasi: berbintang ⟷ normal."""
+        self.set_privacy_masked(not getattr(self, "privacy_masked", True))
+
+    def _setup_privacy_idle_timer(self):
+        """Siapkan timer idle + pemantau aktivitas tingkat aplikasi."""
+        self._privacy_idle_timer = QTimer(self)
+        self._privacy_idle_timer.setSingleShot(True)
+        self._privacy_idle_timer.setInterval(PRIVACY_IDLE_MS)
+        self._privacy_idle_timer.timeout.connect(self._on_privacy_idle_timeout)
+
+        self._privacy_activity_watcher = PrivacyActivityWatcher(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._privacy_activity_watcher)
+
+    def _restart_privacy_idle_timer(self):
+        """Dipanggil setiap ada aktivitas pengguna (hanya bekerja saat mode terbuka)."""
+        if getattr(self, "privacy_masked", True):
+            return  # sudah berbintang → tidak ada yang perlu dihitung
+        timer = getattr(self, "_privacy_idle_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _on_privacy_idle_timeout(self):
+        """Tidak ada aktivitas sama sekali → kembalikan tampilan berbintang."""
+        if not getattr(self, "privacy_masked", True):
+            self.set_privacy_masked(True)
+
     def toggle_filter_sidebar(self):
         if self.filter_dock is None:
             self.filter_sidebar = FilterSidebar(self)
