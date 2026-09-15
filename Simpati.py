@@ -6051,6 +6051,9 @@ PRIVACY_POS_TANGGAL = (2, 4, 5)             # pada format dd|mm|yyyy → 1*|**|1
 
 # Jeda tanpa aktivitas sebelum tampilan kembali disamarkan (milidetik)
 PRIVACY_IDLE_MS = 15000
+# Warna tombol privasi
+PRIVACY_COLOR_ON = "#d71d1d"    # aktif / berbintang → merah, seragam dengan tombol lain
+PRIVACY_COLOR_OFF = "#7a7a7a"   # nonaktif / data terbuka → abu-abu
 
 
 def mask_privacy_text(text, kind: str) -> str:
@@ -9451,13 +9454,17 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "privacy_masked", True):
             btn.setText("Privasi ON")
-            btn.setToolTip("NKK, NIK, dan Tanggal Lahir sedang disamarkan.\n"
+            btn.setToolTip("NKK, NIK, dan Tanggal Lahir disamarkan.\n"
                            "Klik untuk menampilkan data secara utuh.")
+            # 🔴 Aktif → warna merah seragam dengan tombol lain
+            self.style_button(btn, width=92, bg=PRIVACY_COLOR_ON, fg="white", bold=True)
         else:
             detik = int(PRIVACY_IDLE_MS / 1000)
             btn.setText("Privasi OFF")
-            btn.setToolTip(f"Data tampil utuh. Akan otomatis disamarkan kembali\n"
+            btn.setToolTip(f"Data akan otomatis disamarkan kembali\n"
                            f"setelah {detik} detik tanpa aktivitas.")
+            # ⚪ Nonaktif → abu-abu, agar jelas sedang tidak melindungi
+            self.style_button(btn, width=92, bg=PRIVACY_COLOR_OFF, fg="white", bold=True)
 
     def set_privacy_masked(self, masked: bool):
         """Aktif/nonaktifkan penyamaran tampilan. Data asli tidak pernah diubah."""
