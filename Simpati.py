@@ -51,6 +51,7 @@ import pyotp, qrcode
 DEV_BYPASS_LOGIN = True
 # ===================== ByPass Login DEV =====================
 
+import responsive
 from about_dialog import show_about_dialog
 
 # =========================
@@ -2038,7 +2039,7 @@ class FilterSidebar(QWidget):
         super().__init__(parent)
         
         # Konfigurasi dimensi dan spacing untuk tampilan yang rapi
-        self._dock_width = 260  # Lebar dock harus selaras dengan FixedDockWidget
+        self._dock_width = responsive.dock_width(320)  # proporsional terhadap layar
         gap = 6  # Jarak antar elemen yang pas - tidak terlalu rapat
         side_margin = 8  # Margin samping yang minimal namun tetap memberikan ruang
         section_gap = 16
@@ -3340,7 +3341,8 @@ class FixedDockWidget(QDockWidget):
             widget: Widget yang akan diset sebagai konten dock
         """
         super().setWidget(widget)
-        widget.setFixedWidth(self._fixed_width)
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(self._fixed_width)
     
     def sizeHint(self):  # type: ignore
         """Override sizeHint untuk memberikan ukuran yang tepat.
@@ -8500,8 +8502,7 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(True)
-        self.table.verticalHeader().setDefaultSectionSize(24)
-        self.table.horizontalHeader().setFixedHeight(24)
+        responsive.make_table_responsive(self.table, row_h=24, header_h=24)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -9550,7 +9551,7 @@ class MainWindow(QMainWindow):
         if self.filter_dock is None:
             self.filter_sidebar = FilterSidebar(self)
             # Gunakan FixedDockWidget agar lebar benar-benar fix dan tidak bisa digeser
-            fixed_width = 320
+            fixed_width = responsive.dock_width(320)
             self.filter_dock = FixedDockWidget("Filter", self, fixed_width=fixed_width)
             self.filter_dock.setWidget(self.filter_sidebar)
             
@@ -18987,7 +18988,7 @@ class SesuaiWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel rekap ===
         conn = get_connection()
@@ -19254,7 +19255,7 @@ class RekapWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel rekap ===
         conn = get_connection()
@@ -19524,7 +19525,7 @@ class BaruWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel baru ===
         conn = get_connection()
@@ -19793,7 +19794,7 @@ class PemulaWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel baru ===
         conn = get_connection()
@@ -20061,7 +20062,7 @@ class PemulaKode8(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel baru ===
         conn = get_connection()
@@ -20329,7 +20330,7 @@ class UbahWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel ubah ===
         conn = get_connection()
@@ -20561,7 +20562,7 @@ class SaringWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(19, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setStyleSheet("""
@@ -20817,7 +20818,7 @@ class KtpWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel ktpel ===
         conn = get_connection()
@@ -21039,7 +21040,7 @@ class DifabelWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(headers)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
         self.table.setStyleSheet("""
             QHeaderView::section {
                 background-color: #2d2d2d;
@@ -21314,7 +21315,7 @@ class UbahKelaminWindow(QMainWindow):
                 selection-color: #000000;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         # === Ambil data dari tabel ubah_kelamin ===
         conn = get_connection()
@@ -21571,7 +21572,7 @@ class UbahTPSWindow(QMainWindow):
                 border: 1px solid #999999;
             }
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        responsive.make_table_responsive(self.table)
 
         conn = get_connection()
         cur = conn.cursor()
@@ -29635,9 +29636,12 @@ if __name__ == "__main__":
     # ============================================================
     # 🔹 Buat QApplication
     # ============================================================
+    responsive.setup_high_dpi()   # WAJIB sebelum QApplication dibuat
     app = QApplication(sys.argv)
     app.setApplicationName("SIMPATI")
     app.setStyle(QStyleFactory.create("Fusion"))
+    responsive.install(app)       # skala + auto-scroll dialog
+    responsive.simulate_screen(1366, 728)   # HAPUS sebelum build rilis
 
     apply_global_palette(app)
 
