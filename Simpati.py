@@ -1142,9 +1142,9 @@ class CustomComboBox(QComboBox):
         if self._popup_frame is not None:
             return
         self._popup_frame = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self._popup_frame.setObjectName("comboPopupFrame")
+        self._popup_frame.setObjectName("comboSuntingPopupFrame")
         self._popup_frame.setStyleSheet("""
-            QFrame#comboPopupFrame {
+            QFrame#comboSuntingPopupFrame {
                 background: #ffffff;
                 border: 1px solid #bbb;
                 border-radius: 6px;
@@ -1164,6 +1164,7 @@ class CustomComboBox(QComboBox):
             QListWidget::item { padding: 6px 10px; border-radius: 5px; margin: 1px 2px; }
             QListWidget::item:hover { background: #ff9800; color: #ffffff; }
             QListWidget::item:selected { background: #ff9800; color: #ffffff; }
+            QListWidget::item:disabled { color: #B0B0B0; background: transparent; }
             QScrollBar:vertical {
                 background: #f3f4f6; width: 7px; margin: 3px 2px 3px 0px; border-radius: 3px;
             }
@@ -1175,7 +1176,21 @@ class CustomComboBox(QComboBox):
         outer.addWidget(self._popup_list)
         self._popup_list.itemClicked.connect(self._on_popup_item_clicked)
 
+    def _is_source_item_enabled(self, index):
+        """Cek status enabled item ke-index dari model asli combobox (mis. di-setEnabled(False) dari luar)."""
+        try:
+            model = self.model()
+            if model is None:
+                return True
+            idx = model.index(index, self.modelColumn(), self.rootModelIndex())
+            if not idx.isValid():
+                return True
+            return bool(idx.flags() & Qt.ItemFlag.ItemIsEnabled)
+        except Exception:
+            return True
+
     def _on_popup_item_clicked(self, item):
+        # 🔒 Item yang dinonaktifkan (mis. tahapan yang belum boleh dipilih) tidak boleh dipilih
         if not (item.flags() & Qt.ItemFlag.ItemIsEnabled):
            return  # abaikan klik pada item yang sedang di-grayscale
         idx = item.data(Qt.ItemDataRole.UserRole)
@@ -1183,38 +1198,31 @@ class CustomComboBox(QComboBox):
             self.setCurrentIndex(int(idx))
         self.hidePopup()
 
-    def showPopup(self):  # type: ignore
+    def showPopup(self):
+        if hasattr(self, '_current_locked_code') and self._current_locked_code:
+            self._current_locked_code = None
+
         self._ensure_popup_widgets()
 
         self._popup_list.clear()
-        model = self.model()
         for i in range(self.count()):
             item = QListWidgetItem(self.itemText(i))
             item.setData(Qt.ItemDataRole.UserRole, i)
-
-            model_item = model.item(i) if hasattr(model, "item") else None
-            enabled = model_item.isEnabled() if model_item is not None else True
-            if not enabled:
+            if not self._is_source_item_enabled(i):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
-                item.setForeground(QColor("#B0B0B0"))
-
             self._popup_list.addItem(item)
 
         try:
             fm = self._popup_list.fontMetrics()
             max_text_width = max((fm.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
-            padding = 56
-            popup_width = max(self.width(), min(max_text_width + padding, self._max_popup_width))
+            popup_width = max(self.width(), min(max_text_width + 56, self._max_popup_width))
         except Exception:
             popup_width = self.width()
 
-        # Tinggi popup: MAKSIMAL 8 item kelihatan, sisanya di-scroll.
-        # Karena ini QListWidget biasa, scroll-nya sudah otomatis benar
-        # tanpa perlu "membujuk" ukuran container seperti sebelumnya.
-        max_visible = 8
+        max_visible = self._scrollable_popup_items if self._scrollable_popup else 8
         row_height = self._popup_list.sizeHintForRow(0)
         if row_height <= 0:
-            row_height = 34
+            row_height = 32
         visible_count = min(self.count(), max_visible) if self.count() > 0 else 1
         popup_height = row_height * visible_count + 10
 
@@ -1271,7 +1279,7 @@ class CustomComboBox(QComboBox):
         self._animate_arrow(True)
         self.update()
 
-    def hidePopup(self):  # type: ignore
+    def hidePopup(self):
         if self._popup_frame is not None:
             self._popup_frame.hide()
         self._popup_open = False
@@ -1308,8 +1316,8 @@ class CustomComboBox(QComboBox):
         if not self._popup_open:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Down):
                 self.showPopup()
-            event.ignore()
-            return
+                event.accept()
+                return
         event.ignore()
 
     def paintEvent(self, event):
@@ -2754,7 +2762,7 @@ class FilterSidebar(QWidget):
         ("kelamin", "JK", "jk", "Kelamin", None),
         ("kawin", "STS", "sts", "Kawin", None),
         ("disabilitas", "DIS", "dis", "Disabilitas", {
-            "0": "0 (Normal)", "1": "1 (Fisik)", "2": "2 (Intelektual)",
+            "0": "0 (Non-difabel)", "1": "1 (Fisik)", "2": "2 (Intelektual)",
             "3": "3 (Mental)", "4": "4 (Sensorik Wicara)",
             "5": "5 (Sensorik Rungu)", "6": "6 (Sensorik Netra)",
         }),
@@ -8211,8 +8219,15 @@ class MainWindow(QMainWindow):
 
 
         # === Tombol Privasi (samarkan / tampilkan NKK, NIK, TGL_LHR) ===
-        self.btn_privacy = QPushButton("Privasi")
-        self.style_button(self.btn_privacy, width=92, bg="#d71d1d", fg="white", bold=True)
+        self.btn_privacy = QPushButton("")
+        self.style_button(
+            self.btn_privacy,
+            width=15,
+            height=15,
+            bg="#d71d1d",
+            fg="white",
+            bold=False
+        )
         self.btn_privacy.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_privacy.clicked.connect(self.toggle_privacy_mask)
         self.toolbar.addWidget(self.btn_privacy)
@@ -9453,18 +9468,32 @@ class MainWindow(QMainWindow):
         if btn is None:
             return
         if getattr(self, "privacy_masked", True):
-            btn.setText("Privasi ON")
+            btn.setText("")
             btn.setToolTip("NKK, NIK, dan Tanggal Lahir disamarkan.\n"
                            "Klik untuk menampilkan data secara utuh.")
             # 🔴 Aktif → warna merah seragam dengan tombol lain
-            self.style_button(btn, width=92, bg=PRIVACY_COLOR_ON, fg="white", bold=True)
+            self.style_button(
+                btn,
+                width=15,
+                height=15,
+                bg=PRIVACY_COLOR_ON,
+                fg="white",
+                bold=False
+            )
         else:
             detik = int(PRIVACY_IDLE_MS / 1000)
-            btn.setText("Privasi OFF")
+            btn.setText("")
             btn.setToolTip(f"Data akan otomatis disamarkan kembali\n"
                            f"setelah {detik} detik tanpa aktivitas.")
             # ⚪ Nonaktif → abu-abu, agar jelas sedang tidak melindungi
-            self.style_button(btn, width=92, bg=PRIVACY_COLOR_OFF, fg="white", bold=True)
+            self.style_button(
+                btn,
+                width=15,
+                height=15,
+                bg=PRIVACY_COLOR_OFF,
+                fg="white",
+                bold=False
+            )
 
     def set_privacy_masked(self, masked: bool):
         """Aktif/nonaktifkan penyamaran tampilan. Data asli tidak pernah diubah."""
